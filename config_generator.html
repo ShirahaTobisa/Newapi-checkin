@@ -908,14 +908,24 @@
                 </div>
 
                 <div class="tips" style="margin-top: 16px;">
-                    <h4>💡 云端同步说明：</h4>
+<h4>💡 云端同步说明：</h4>
                     <ul>
-                        <li><strong>坚果云：</strong>使用 WebDAV 协议，需在账户设置中创建「应用专用密码」（不是登录密码）</li>
-                        <li><strong>群晖 NAS：</strong>需启用 WebDAV 服务（端口 5005/5006），确保 NAS 可从外网访问</li>
-                        <li><strong>NextCloud：</strong>地址格式为 <code>https://域名/remote.php/dav/files/用户名/</code></li>
-                        <li><strong>GitHub Actions：</strong>保存后，将生成的 <code>CONFIG_URL</code> 和 <code>CONFIG_AUTH</code> 添加到仓库 Secrets</li>
-                        <li><strong>CORS 限制：</strong>浏览器直接访问可能受 CORS 限制，如遇跨域错误请参考下方解决方案</li>
+                        <li><strong>坚果云：</strong>需在账户设置中创建「应用专用密码」（非登录密码）</li>
+                        <li><strong>群晖 NAS：</strong>需启用 WebDAV（端口 5005/5006），确保外网可达</li>
+                        <li><strong>NextCloud：</strong>地址格式 <code>https://域名/remote.php/dav/files/用户名/</code></li>
+                        <li><strong>GitHub Actions：</strong>保存后将 <code>CONFIG_URL</code> + <code>CONFIG_AUTH</code> 添加到仓库 Secrets</li>
                     </ul>
+
+                    <div style="margin-top: 16px; padding-top: 16px; border-top: 1px solid rgba(52,211,153,0.15);">
+                        <h4 style="color: #fbbf24; margin-bottom: 12px; font-size: 14px;">⚠️ CORS 跨域限制解决方案：</h4>
+                        <ul style="margin-left: 20px; color: rgba(255,255,255,0.65); font-size: 13px; line-height: 1.8;">
+                            <li><strong>方案一（推荐）：</strong>本地打开 HTML 文件（<code>file://</code> 协议），CORS 限制自动绕过</li>
+                            <li><strong>方案二：</strong>群晖/NextCloud 在服务端添加 CORS 头 <code>Access-Control-Allow-Origin</code></li>
+                            <li><strong>方案三：</strong>坚果云不支持自定义 CORS，请用方案一</li>
+                            <li><strong>方案四：</strong>自建 CORS 代理（如 <code>cors-anywhere</code>），拼在 WebDAV 地址前面</li>
+                        </ul>
+                    </div>
+                </div>
                 </div>
             </div>
 
