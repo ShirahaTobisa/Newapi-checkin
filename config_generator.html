@@ -1762,6 +1762,50 @@
 
         const CLOUD_STORAGE_KEY = 'newapi_checkin_cloud_config';
 
+        function loadCloudConfigFromLocal() {
+            const saved = localStorage.getItem(CLOUD_STORAGE_KEY);
+            if (!saved) return;
+
+            try {
+                const config = JSON.parse(saved);
+                document.getElementById('cloud-url').value = config.url || '';
+                document.getElementById('cloud-auth-type').value = config.authType || 'basic';
+                document.getElementById('cloud-username').value = config.username || '';
+                document.getElementById('cloud-password').value = config.password || '';
+                document.getElementById('cloud-token').value = config.token || '';
+                document.getElementById('cloud-filename').value = config.filename || 'newapi-config.json';
+                document.getElementById('cors-proxy-enabled').checked = config.corsProxyEnabled || false;
+                document.getElementById('cors-proxy-url').value = config.corsProxyUrl || '';
+
+                if (config.authType === 'token') {
+                    document.getElementById('cloud-basic-auth-fields').style.display = 'none';
+                    document.getElementById('cloud-token-field').style.display = 'block';
+                }
+
+                if (config.corsProxyEnabled) {
+                    document.getElementById('cors-proxy-field').style.display = 'block';
+                    document.getElementById('cors-proxy-warning').style.display = 'block';
+                    document.getElementById('cors-proxy-url').style.display = 'block';
+                    if (config.corsProxyUrl) {
+                        const matched = CORS_PROXIES.find(p => p.url === config.corsProxyUrl);
+                        const label = matched ? matched.name : '自定义代理';
+                        document.getElementById('cors-proxy-friendly-name').textContent = `✅ 已选择：${label}`;
+                        document.getElementById('cors-proxy-picker-btn').innerHTML = `<span>${matched ? matched.name : '自定义代理'}</span><span class="cors-proxy-picker-arrow">▸</span>`;
+                        document.getElementById('cors-proxy-picker-btn').classList.add('selected');
+                    }
+                }
+
+                if (config.preset) {
+                    document.querySelectorAll('.cloud-preset-btn').forEach(b => b.classList.remove('active'));
+                    const presetBtn = document.getElementById(`preset-${config.preset}`);
+                    if (presetBtn) presetBtn.classList.add('active');
+                }
+
+                updateSavedConfigDisplay(config);
+                updateCorsProxyPreview();
+            } catch (e) {}
+        }
+
         function toggleCloudSync() {
             const section = document.getElementById('cloud-section');
             if (section.style.display === 'none') {
@@ -2076,48 +2120,19 @@
             }
         }
 
+        // ─── 下载页面代码（恢复逻辑已移至 loadCloudConfigFromLocal）──
+
         function downloadThisPage() {
-            const saved = localStorage.getItem(CLOUD_STORAGE_KEY);
-            if (!saved) return;
-
-            try {
-                const config = JSON.parse(saved);
-                document.getElementById('cloud-url').value = config.url || '';
-                document.getElementById('cloud-auth-type').value = config.authType || 'basic';
-                document.getElementById('cloud-username').value = config.username || '';
-                document.getElementById('cloud-password').value = config.password || '';
-                document.getElementById('cloud-token').value = config.token || '';
-                document.getElementById('cloud-filename').value = config.filename || 'newapi-config.json';
-                document.getElementById('cors-proxy-enabled').checked = config.corsProxyEnabled || false;
-                document.getElementById('cors-proxy-url').value = config.corsProxyUrl || '';
-
-                if (config.authType === 'token') {
-                    document.getElementById('cloud-basic-auth-fields').style.display = 'none';
-                    document.getElementById('cloud-token-field').style.display = 'block';
-                }
-
-                if (config.corsProxyEnabled) {
-                    document.getElementById('cors-proxy-field').style.display = 'block';
-                    document.getElementById('cors-proxy-warning').style.display = 'block';
-                    document.getElementById('cors-proxy-url').style.display = 'block';
-                    if (config.corsProxyUrl) {
-                        const matched = CORS_PROXIES.find(p => p.url === config.corsProxyUrl);
-                        const label = matched ? matched.name : '自定义代理';
-                        document.getElementById('cors-proxy-friendly-name').textContent = `✅ 已选择：${label}`;
-                        document.getElementById('cors-proxy-picker-btn').innerHTML = `<span>${matched ? matched.name : '自定义代理'}</span><span class="cors-proxy-picker-arrow">▸</span>`;
-                        document.getElementById('cors-proxy-picker-btn').classList.add('selected');
-                    }
-                }
-
-                if (config.preset) {
-                    document.querySelectorAll('.cloud-preset-btn').forEach(b => b.classList.remove('active'));
-                    const presetBtn = document.getElementById(`preset-${config.preset}`);
-                    if (presetBtn) presetBtn.classList.add('active');
-                }
-
-                updateSavedConfigDisplay(config);
-                updateCorsProxyPreview();
-            } catch (e) {}
+            const html = document.documentElement.outerHTML;
+            const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'config_generator.html';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
         }
 
         function buildCloudUrl() {
