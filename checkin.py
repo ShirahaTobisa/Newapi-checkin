@@ -174,6 +174,16 @@ class NewAPICheckin:
 
         return result
 
+    def gwent_draw_many(self, count: int = 3) -> list:
+        """连续翻牌；任意一次失败后停止，避免无效重复请求。"""
+        results = []
+        for _ in range(max(1, count)):
+            result = self.gwent_draw()
+            results.append(result)
+            if not result.get('success'):
+                break
+        return results
+
     def _extract_user_id_from_session(self, session_cookie: str) -> Optional[str]:
         """
         从 Session Cookie 中提取用户ID
@@ -557,13 +567,91 @@ def load_config_from_cloud(config_url: str, config_auth: str = None) -> Optional
         return None
 
 
+def run_gwent_tasks(accounts: list, draw_count: int) -> bool:
+    """执行独立的维云翻牌任务。"""
+    targets = []
+    for index, account in enumerate(accounts, 1):
+        client = NewAPICheckin(
+            account['url'],
+            account['session'],
+            account.get('user_id'),
+            account.get('cf_clearance'),
+        )
+        if client.is_vsllm():
+            targets.append((index, account, client))
+
+    print(f'共 {len(targets)} 个维云账号待翻牌，每个最多 {draw_count} 次\n')
+    if not targets:
+        print('[警告] 配置中没有 vsllm.com 账号，翻牌任务已跳过')
+        return True
+
+    success_count = 0
+    fail_count = 0
+
+    for position, (index, account, client) in enumerate(targets, 1):
+        name = account.get('name') or f'账号{index}'
+        user_id = account.get('user_id')
+        print(f'[{position}/{len(targets)}] {name}')
+        print(f'  站点: {NewAPICheckin._mask_url(account["url"])}')
+        if user_id:
+            print(f'  用户ID: {NewAPICheckin._mask_user_id(user_id)}')
+
+        user_info = client.get_user_info()
+        if user_info:
+            username = user_info.get('username', '未知')
+            masked_username = username[:3] + '***' if len(username) > 3 else '***'
+            print(f'  用户: {masked_username}')
+        else:
+            print('  用户: 获取失败（可能 session 已过期）')
+
+        results = client.gwent_draw_many(draw_count)
+        completed = 0
+        total_quota = 0
+        for attempt, result in enumerate(results, 1):
+            if result.get('unlock_success'):
+                print(f'  第 {attempt}/{draw_count} 次加成: ✅ {result["unlock_message"]}')
+            else:
+                print(f'  第 {attempt}/{draw_count} 次加成: ❌ {result["message"]}')
+
+            if result.get('success'):
+                completed += 1
+                prize_name = result.get('prize_name') or '未知奖品'
+                prize_quota = result.get('prize_quota')
+                if isinstance(prize_quota, (int, float)):
+                    total_quota += prize_quota
+                    quota_text = f' (+{prize_quota:,} 额度)'
+                else:
+                    quota_text = ''
+                print(f'  第 {attempt}/{draw_count} 次翻牌: ✅ {prize_name}{quota_text}')
+            elif result.get('unlock_success'):
+                print(f'  第 {attempt}/{draw_count} 次翻牌: ❌ {result["message"]}')
+
+        if completed == draw_count:
+            success_count += 1
+            print(f'  小结: ✅ 完成 {completed}/{draw_count} 次，合计 +{total_quota:,} 额度')
+        else:
+            fail_count += 1
+            print(f'  小结: ❌ 完成 {completed}/{draw_count} 次')
+        print()
+
+    print('=' * 50)
+    print(f'翻牌完成: 成功 {success_count}, 失败 {fail_count}')
+    print('=' * 50)
+    return fail_count != len(targets)
+
+
 def main():
     """主函数"""
     import pytz
     beijing_tz = pytz.timezone('Asia/Shanghai')
     execution_time = datetime.now(beijing_tz).strftime("%Y-%m-%d %H:%M:%S")
     print('=' * 50)
-    print('NewAPI 自动签到')
+    task_mode = os.environ.get('TASK_MODE', 'checkin').strip().lower()
+    if task_mode not in ('checkin', 'gwent'):
+        print(f'[错误] 不支持的 TASK_MODE: {task_mode}')
+        sys.exit(1)
+
+    print('NewAPI 自动签到' if task_mode == 'checkin' else '维云自动翻牌')
     print(f'执行时间: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}')
     print('=' * 50)
 
@@ -588,6 +676,16 @@ def main():
     if not accounts:
         print('[错误] 账号配置解析失败')
         sys.exit(1)
+
+    if task_mode == 'gwent':
+        try:
+            draw_count = max(1, min(10, int(os.environ.get('GWENT_DRAW_COUNT', '3'))))
+        except ValueError:
+            print('[错误] GWENT_DRAW_COUNT 必须是整数')
+            sys.exit(1)
+        if not run_gwent_tasks(accounts, draw_count):
+            sys.exit(1)
+        return
 
     print(f'共 {len(accounts)} 个账号待签到\n')
 
@@ -622,22 +720,6 @@ def main():
         # 执行签到
         result = client.checkin()
         checkin_count = 0  # 默认值，避免历史接口失败时未定义
-        gwent_result = None
-
-        if client.is_vsllm():
-            gwent_result = client.gwent_draw()
-            if gwent_result['unlock_success']:
-                print(f'  翻牌加成: ✅ {gwent_result["unlock_message"]}')
-            else:
-                print(f'  翻牌加成: ❌ {gwent_result["message"]}')
-
-            if gwent_result['success']:
-                prize_name = gwent_result.get('prize_name') or '未知奖品'
-                prize_quota = gwent_result.get('prize_quota')
-                quota_text = f' (+{prize_quota:,} 额度)' if isinstance(prize_quota, (int, float)) else ''
-                print(f'  翻牌结果: ✅ {prize_name}{quota_text}')
-            elif gwent_result['unlock_success']:
-                print(f'  翻牌结果: ❌ {gwent_result["message"]}')
 
         if result['success']:
             success_count += 1
@@ -680,7 +762,6 @@ def main():
                 'message': result['message'],
                 'quota_awarded': result.get('quota_awarded'),
                 'checkin_count': checkin_count,
-                'gwent': gwent_result,
             }
             checkin_results.append(account_result)
         else:
@@ -694,7 +775,6 @@ def main():
                 'success': False,
                 'message': message,
                 'session_expired': 'session' in message.lower() or '认证' in message,
-                'gwent': gwent_result,
             }
             checkin_results.append(account_result)
 

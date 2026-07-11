@@ -76,6 +76,28 @@ class GwentDrawTest(unittest.TestCase):
         self.assertTrue(result['success'])
         self.assertEqual(client.session.post.call_count, 2)
 
+    def test_draw_many_runs_requested_number_of_times(self):
+        client = self.make_client()
+        client.gwent_draw = Mock(return_value={'success': True})
+
+        results = client.gwent_draw_many(3)
+
+        self.assertEqual(len(results), 3)
+        self.assertEqual(client.gwent_draw.call_count, 3)
+
+    def test_draw_many_stops_after_first_failure(self):
+        client = self.make_client()
+        client.gwent_draw = Mock(side_effect=[
+            {'success': True},
+            {'success': False, 'message': '冷却中'},
+            {'success': True},
+        ])
+
+        results = client.gwent_draw_many(3)
+
+        self.assertEqual(len(results), 2)
+        self.assertEqual(client.gwent_draw.call_count, 2)
+
 
 if __name__ == '__main__':
     unittest.main()
