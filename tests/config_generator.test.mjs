@@ -71,6 +71,10 @@ test("inline JavaScript compiles and public credential-forwarding proxies are ab
   const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/gu)].map((match) => match[1]);
   assert.ok(scripts.length > 0);
   for (const source of scripts) new Function(source);
+  assert.ok(
+    html.includes("https://newapi-checkin-config-relay.ayasaki.workers.dev/api/config"),
+    "the deployed Worker URL should be preconfigured",
+  );
 
   for (const banned of [
     "api.allorigins.win",
