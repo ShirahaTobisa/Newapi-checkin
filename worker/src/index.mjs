@@ -291,8 +291,13 @@ async function callUpstream(request, env, upstreamFetch) {
     throw new HttpError(502, "upstream_unavailable", "The JianGuoYun WebDAV service is unavailable.");
   }
 
+  const upstreamStatus = upstream.status === 520 ? 404 : upstream.status;
+
   if (!upstream.ok) {
-    if (request.method === "GET" && upstream.status === 404) {
+    // JianGuoYun may expose a missing WebDAV object as 520 to Cloudflare's
+    // egress while returning 404 to ordinary clients. For GET, both mean the
+    // config has not been saved yet; PUT still treats 520 as an upstream error.
+    if (request.method === "GET" && upstreamStatus === 404) {
       throw new HttpError(404, "config_not_found", "The config file has not been saved yet.");
     }
 

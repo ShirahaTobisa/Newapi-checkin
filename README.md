@@ -56,7 +56,7 @@ https://你的用户名.github.io/Newapi-checkin/config_generator.html
 1. 按照 [worker/README.md](worker/README.md) 在 Cloudflare Workers 部署中继。
 2. 在 Worker 中配置 Secrets：`JIANGUO_USERNAME`、`JIANGUO_APP_PASSWORD`、`SYNC_TOKEN`。
 3. 将 `ALLOWED_ORIGINS` 设置为你的 GitHub Pages 或自定义域名 Origin，例如 `https://你的用户名.github.io`。
-4. 在网页生成器的“云端同步”中选择“坚果云”；本 fork 已预置 `https://sync.newapicheckin.mornye.uk/api/config`，只需填写 `SYNC_TOKEN`。
+4. 在网页生成器的“云端同步”中选择“坚果云”；本 fork 已预置 `https://newapi-sync.mornye.uk/api/config`，只需填写 `SYNC_TOKEN`。
 5. 保存成功后，把页面生成的 `CONFIG_URL`、`CONFIG_AUTH` 添加到 GitHub Actions Secrets。
 
 之后任意设备只需填写同一个 Worker 地址和同步令牌，即可读取或更新同一份配置。坚果云邮箱和应用密码只保存在你自己的 Worker Secrets 中。

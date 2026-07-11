@@ -72,7 +72,7 @@ test("inline JavaScript compiles and public credential-forwarding proxies are ab
   assert.ok(scripts.length > 0);
   for (const source of scripts) new Function(source);
   assert.ok(
-    html.includes("https://sync.newapicheckin.mornye.uk/api/config"),
+    html.includes("https://newapi-sync.mornye.uk/api/config"),
     "the deployed Worker URL should be preconfigured",
   );
 

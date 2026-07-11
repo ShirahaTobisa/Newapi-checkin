@@ -207,6 +207,15 @@ test("GET preserves upstream 404 to represent a config that has not been saved",
   assert.equal((await errorBody(response)).error.code, "config_not_found");
 });
 
+test("GET treats JianGuoYun's Cloudflare-facing 520 as a missing config", async () => {
+  const response = await handleRequest(request("GET"), defaultEnv, async () =>
+    new Response("webdav error", { status: 520 }),
+  );
+
+  assert.equal(response.status, 404);
+  assert.equal((await errorBody(response)).error.code, "config_not_found");
+});
+
 test("upstream failures and unsupported routes use JSON errors", async () => {
   const upstreamFailure = await handleRequest(request("GET"), defaultEnv, async () =>
     new Response("bad credentials", { status: 401 }),
