@@ -1,6 +1,7 @@
 const API_PATH = "/api/config";
 const UPSTREAM_ORIGIN = "https://dav.jianguoyun.com";
 const DEFAULT_CONFIG_PATH = "/dav/newapi-config.json";
+const KV_CONFIG_KEY = "newapi-config.json";
 const MAX_BODY_BYTES = 256 * 1024;
 
 class HttpError extends Error {
@@ -335,6 +336,32 @@ function upstreamResponse(upstream, body, corsOrigin) {
   });
 }
 
+async function callKv(request, env) {
+  if (request.method === "GET") {
+    const value = await env.CONFIG_KV.get(KV_CONFIG_KEY);
+    if (value === null) {
+      throw new HttpError(404, "config_not_found", "The config file has not been saved yet.");
+    }
+
+    const headers = new Headers({ "Content-Type": "application/json; charset=utf-8" });
+    addCommonHeaders(headers);
+    return new Response(value, { status: 200, headers });
+  }
+
+  const body = await readLimitedBody(request);
+  const value = new TextDecoder().decode(body);
+  try {
+    JSON.parse(value);
+  } catch {
+    throw new HttpError(400, "invalid_json", "The config must be valid JSON.");
+  }
+  await env.CONFIG_KV.put(KV_CONFIG_KEY, value);
+
+  const headers = new Headers();
+  addCommonHeaders(headers);
+  return new Response(null, { status: 204, headers });
+}
+
 export async function handleRequest(request, env = {}, upstreamFetch) {
   let corsOrigin;
 
@@ -364,6 +391,15 @@ export async function handleRequest(request, env = {}, upstreamFetch) {
 
     const syncToken = requiredSecret(env, "SYNC_TOKEN");
     requireBearerToken(request, syncToken);
+
+    if (env.CONFIG_KV && typeof env.CONFIG_KV.get === "function") {
+      const response = await callKv(request, env);
+      const headers = new Headers(response.headers);
+      if (corsOrigin !== undefined) {
+        headers.set("Access-Control-Allow-Origin", corsOrigin);
+      }
+      return new Response(response.body, { status: response.status, headers });
+    }
 
     const { upstream, body } = await callUpstream(request, env, upstreamFetch);
     return upstreamResponse(upstream, body, corsOrigin);

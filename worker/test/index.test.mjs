@@ -30,6 +30,57 @@ async function errorBody(response) {
   return response.json();
 }
 
+function mockKv(initialValue = null) {
+  let value = initialValue;
+  return {
+    async get(key) {
+      assert.equal(key, "newapi-config.json");
+      return value;
+    },
+    async put(key, nextValue) {
+      assert.equal(key, "newapi-config.json");
+      value = nextValue;
+    },
+  };
+}
+
+test("KV binding stores and retrieves config without WebDAV", async () => {
+  const kv = mockKv();
+  const env = { ...defaultEnv, CONFIG_KV: kv };
+  const payload = '{"accounts":[{"name":"test"}]}';
+  let upstreamCalled = false;
+
+  const putResponse = await handleRequest(
+    request("PUT", { body: payload }),
+    env,
+    async () => {
+      upstreamCalled = true;
+      throw new Error("must not call WebDAV");
+    },
+  );
+  assert.equal(putResponse.status, 204);
+
+  const getResponse = await handleRequest(request("GET"), env, async () => {
+    upstreamCalled = true;
+    throw new Error("must not call WebDAV");
+  });
+  assert.equal(getResponse.status, 200);
+  assert.equal(await getResponse.text(), payload);
+  assert.equal(getResponse.headers.get("Access-Control-Allow-Origin"), "https://app.example");
+  assert.equal(upstreamCalled, false);
+});
+
+test("KV returns 404 before the first save and rejects invalid JSON", async () => {
+  const env = { ...defaultEnv, CONFIG_KV: mockKv() };
+  const missing = await handleRequest(request("GET"), env);
+  assert.equal(missing.status, 404);
+  assert.equal((await errorBody(missing)).error.code, "config_not_found");
+
+  const invalid = await handleRequest(request("PUT", { body: "not-json" }), env);
+  assert.equal(invalid.status, 400);
+  assert.equal((await errorBody(invalid)).error.code, "invalid_json");
+});
+
 test("OPTIONS returns CORS headers without requiring authorization", async () => {
   let called = false;
   const response = await handleRequest(
