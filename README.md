@@ -8,7 +8,7 @@
 - ✅ **支持多个不同网站**（只要是基于 NewAPI 搭建的站点）
 - ✅ HTTP 直连，无需浏览器
 - ✅ GitHub Actions 自动化执行
-- ✅ 详细的签到日志输出
+- ✅ **每日签到记录**（Actions 摘要 + 完整日志附件，保留 90 天）
 - ✅ 错误处理和超时控制
 - ✅ 支持手动触发和定时任务
 - ✅ **钉钉通知**（签到完成后自动推送结果）
@@ -56,7 +56,7 @@ https://你的用户名.github.io/Newapi-checkin/config_generator.html
 1. 按照 [worker/README.md](worker/README.md) 在 Cloudflare Workers 部署中继。
 2. 在 Worker 中配置 Secrets：`JIANGUO_USERNAME`、`JIANGUO_APP_PASSWORD`、`SYNC_TOKEN`。
 3. 将 `ALLOWED_ORIGINS` 设置为你的 GitHub Pages 或自定义域名 Origin，例如 `https://你的用户名.github.io`。
-4. 在网页生成器的“云端同步”中选择“坚果云”；本 fork 已预置 `https://newapi-checkin-config-relay.ayasaki.workers.dev/api/config`，只需填写 `SYNC_TOKEN`。
+4. 在网页生成器的“云端同步”中选择“坚果云”；本 fork 已预置 `https://sync.newapicheckin.mornye.uk/api/config`，只需填写 `SYNC_TOKEN`。
 5. 保存成功后，把页面生成的 `CONFIG_URL`、`CONFIG_AUTH` 添加到 GitHub Actions Secrets。
 
 之后任意设备只需填写同一个 Worker 地址和同步令牌，即可读取或更新同一份配置。坚果云邮箱和应用密码只保存在你自己的 Worker Secrets 中。
@@ -194,6 +194,15 @@ https://api.example1.com#MTc2NzQx...,https://api.example2.com#QVFMXzJh...,https:
 #### 5. 定时执行
 
 工作流默认每天 **北京时间 8:10** 自动执行签到，无需手动操作。
+
+#### 6. 查看每日签到记录
+
+每次运行都会自动生成两份记录，即使签到失败也会尽量保留：
+
+- 在 Actions 运行详情页的 **Summary** 中直接查看结果和最后 300 行输出。
+- 在运行详情页底部的 **Artifacts** 下载完整日志，文件按北京时间日期和运行编号命名，保留 90 天。
+
+日志上传前会再次替换 `CONFIG_URL`、认证信息、账号配置和钉钉凭据，避免把完整 Secret 写入附件。日志不会提交到代码仓库。
 
 ---
 

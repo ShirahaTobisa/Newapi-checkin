@@ -1,5 +1,5 @@
 name = "newapi-checkin-config-relay"
-main = "src/index.mjs"
+main = "src/entry.mjs"
 compatibility_date = "2026-07-11"
 workers_dev = true
 

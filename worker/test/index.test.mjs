@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { handleRequest, MAX_BODY_BYTES } from "../src/index.mjs";
+import { handleRequest } from "../src/index.mjs";
+
+const MAX_BODY_BYTES = 256 * 1024;
 
 const endpoint = "https://relay.example/api/config";
 const defaultEnv = {

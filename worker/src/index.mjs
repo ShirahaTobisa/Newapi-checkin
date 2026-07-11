@@ -330,7 +330,7 @@ function upstreamResponse(upstream, body, corsOrigin) {
   });
 }
 
-export async function handleRequest(request, env = {}, upstreamFetch = globalThis.fetch) {
+export async function handleRequest(request, env = {}, upstreamFetch) {
   let corsOrigin;
 
   try {
@@ -369,8 +369,6 @@ export async function handleRequest(request, env = {}, upstreamFetch = globalThi
 
 export default {
   fetch(request, env) {
-    return handleRequest(request, env);
+    return handleRequest(request, env, (url, init) => fetch(url, init));
   },
 };
-
-export { MAX_BODY_BYTES };
