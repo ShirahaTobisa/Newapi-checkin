@@ -206,6 +206,15 @@ def build_checkin_report(results: List[Dict[str, Any]], execution_time: str) -> 
             quota_str = f'+{format_quota(quota)}' if quota else '-'
             checkin_count = r.get('checkin_count')
             detail = f'已签 {checkin_count} 天' if checkin_count else r.get('message', '成功')
+            gwent = r.get('gwent')
+            if gwent:
+                if gwent.get('success'):
+                    prize_name = gwent.get('prize_name') or '未知奖品'
+                    prize_quota = gwent.get('prize_quota')
+                    prize_text = f'{prize_name} +{format_quota(prize_quota)}' if prize_quota else prize_name
+                    detail += f'；翻牌：{prize_text}'
+                else:
+                    detail += f'；翻牌失败：{gwent.get("message", "未知错误")}'
             lines.append(f'| {name} | {quota_str} | {detail} |')
         lines.append('')
     

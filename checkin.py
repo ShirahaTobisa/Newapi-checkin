@@ -12,6 +12,7 @@ import base64
 import requests
 from datetime import datetime
 from typing import Optional
+from urllib.parse import urlparse
 
 try:
     from cf_bypass import detect_cloudflare_block, CloudflareBypasser
@@ -83,6 +84,95 @@ class NewAPICheckin:
             self.user_id = self._extract_user_id_from_session(session_cookie)
             if self.user_id:
                 self.session.headers.update({'new-api-user': str(self.user_id)})
+
+    def is_vsllm(self) -> bool:
+        """判断当前账号是否为维云站点。"""
+        return (urlparse(self.base_url).hostname or '').lower().rstrip('.') == 'vsllm.com'
+
+    @staticmethod
+    def _gwent_message(data: dict, default: str) -> str:
+        message = data.get('message') if isinstance(data, dict) else None
+        return str(message) if message else default
+
+    def gwent_draw(self) -> dict:
+        """为维云账号激活下一抽 50% 分享加成并翻牌。"""
+        result = {
+            'success': False,
+            'message': '',
+            'unlock_success': False,
+            'unlock_message': '',
+            'prize_name': None,
+            'prize_quota': None,
+            'prize_rarity': None,
+            'bonus_percent': None,
+        }
+
+        if not self.is_vsllm():
+            result['message'] = '非维云站点，已跳过翻牌'
+            return result
+
+        try:
+            unlock_resp = self.session.post(
+                f'{self.base_url}/api/gwent/share_unlock', timeout=30
+            )
+            try:
+                unlock_data = unlock_resp.json()
+            except (json.JSONDecodeError, ValueError):
+                result['message'] = f'加成解锁响应格式错误 (HTTP {unlock_resp.status_code})'
+                return result
+
+            unlock_message = self._gwent_message(unlock_data, '50% 加成已解锁')
+            already_unlocked = any(
+                marker in unlock_message.lower()
+                for marker in ('已解锁', '已激活', '已经', 'already', 'activated')
+            )
+            unlock_success = (
+                200 <= unlock_resp.status_code < 300
+                and unlock_data.get('success', True)
+            ) or already_unlocked
+
+            result['unlock_success'] = unlock_success
+            result['unlock_message'] = unlock_message
+            if not unlock_success:
+                if unlock_resp.status_code == 401:
+                    result['message'] = '翻牌认证失败: Session 可能已过期'
+                else:
+                    result['message'] = f'50% 加成解锁失败: {unlock_message}'
+                return result
+
+            draw_resp = self.session.post(f'{self.base_url}/api/gwent/draw', timeout=30)
+            try:
+                draw_data = draw_resp.json()
+            except (json.JSONDecodeError, ValueError):
+                result['message'] = f'翻牌响应格式错误 (HTTP {draw_resp.status_code})'
+                return result
+
+            draw_message = self._gwent_message(draw_data, '翻牌成功')
+            if not (200 <= draw_resp.status_code < 300 and draw_data.get('success')):
+                if draw_resp.status_code == 401:
+                    result['message'] = '翻牌认证失败: Session 可能已过期'
+                else:
+                    result['message'] = f'翻牌失败: {draw_message}'
+                return result
+
+            payload = draw_data.get('data') or {}
+            prize = payload.get('prize') or {}
+            result.update({
+                'success': True,
+                'message': draw_message,
+                'prize_name': prize.get('name'),
+                'prize_quota': prize.get('quota'),
+                'prize_rarity': prize.get('rarity'),
+                'bonus_percent': payload.get('bonus_pct', payload.get('bonus_percent')),
+            })
+        except requests.exceptions.Timeout:
+            result['message'] = '翻牌请求超时'
+        except requests.exceptions.RequestException as e:
+            result['message'] = f'翻牌网络请求失败: {e}'
+        except Exception as e:
+            result['message'] = f'翻牌未知错误: {e}'
+
+        return result
 
     def _extract_user_id_from_session(self, session_cookie: str) -> Optional[str]:
         """
@@ -532,6 +622,22 @@ def main():
         # 执行签到
         result = client.checkin()
         checkin_count = 0  # 默认值，避免历史接口失败时未定义
+        gwent_result = None
+
+        if client.is_vsllm():
+            gwent_result = client.gwent_draw()
+            if gwent_result['unlock_success']:
+                print(f'  翻牌加成: ✅ {gwent_result["unlock_message"]}')
+            else:
+                print(f'  翻牌加成: ❌ {gwent_result["message"]}')
+
+            if gwent_result['success']:
+                prize_name = gwent_result.get('prize_name') or '未知奖品'
+                prize_quota = gwent_result.get('prize_quota')
+                quota_text = f' (+{prize_quota:,} 额度)' if isinstance(prize_quota, (int, float)) else ''
+                print(f'  翻牌结果: ✅ {prize_name}{quota_text}')
+            elif gwent_result['unlock_success']:
+                print(f'  翻牌结果: ❌ {gwent_result["message"]}')
 
         if result['success']:
             success_count += 1
@@ -573,7 +679,8 @@ def main():
                 'success': True,
                 'message': result['message'],
                 'quota_awarded': result.get('quota_awarded'),
-                'checkin_count': checkin_count
+                'checkin_count': checkin_count,
+                'gwent': gwent_result,
             }
             checkin_results.append(account_result)
         else:
@@ -586,7 +693,8 @@ def main():
                 'name': name,
                 'success': False,
                 'message': message,
-                'session_expired': 'session' in message.lower() or '认证' in message
+                'session_expired': 'session' in message.lower() or '认证' in message,
+                'gwent': gwent_result,
             }
             checkin_results.append(account_result)
 
