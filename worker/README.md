@@ -26,7 +26,7 @@
 1. 在 Cloudflare 控制台进入 **Workers & Pages**，创建一个 Worker。
 2. 使用在线编辑器，以模块 Worker 的形式粘贴 `src/index.mjs` 的内容并部署。
 3. 绑定名为 `CONFIG_KV` 的 KV 命名空间，并添加普通变量 `ALLOWED_ORIGINS`。
-4. 以 **Secret** 类型添加 `SYNC_TOKEN`，然后重新部署。仅在不使用 KV、回退坚果云 WebDAV 时才需要 `JIANGUO_USERNAME`、`JIANGUO_APP_PASSWORD` 和 `JIANGUO_CONFIG_PATH`。
+4. 以 **Secret** 类型添加 `SYNC_TOKEN`，然后重新部署。可选的 `ACTIONS_TOKEN` 可为 GitHub Actions 使用独立令牌。仅在不使用 KV、回退坚果云 WebDAV 时才需要 `JIANGUO_USERNAME`、`JIANGUO_APP_PASSWORD` 和 `JIANGUO_CONFIG_PATH`。
 
 ### Wrangler
 

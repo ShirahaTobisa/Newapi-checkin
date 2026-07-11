@@ -106,11 +106,20 @@ function constantTimeEqual(left, right) {
   return mismatch === 0;
 }
 
-function requireBearerToken(request, expectedToken) {
+function requireBearerToken(request, expectedTokens) {
   const authorization = request.headers.get("Authorization") ?? "";
   const match = /^Bearer ([^\s]+)$/iu.exec(authorization);
+  const tokens = expectedTokens.filter(
+    (token) => typeof token === "string" && token.length > 0,
+  );
+  const valid =
+    match !== null &&
+    tokens.reduce(
+      (matched, token) => constantTimeEqual(match[1], token) || matched,
+      false,
+    );
 
-  if (!match || !constantTimeEqual(match[1], expectedToken)) {
+  if (!valid) {
     throw new HttpError(401, "unauthorized", "A valid Bearer token is required.", undefined, {
       "WWW-Authenticate": 'Bearer realm="newapi-config"',
     });
@@ -390,7 +399,7 @@ export async function handleRequest(request, env = {}, upstreamFetch) {
     }
 
     const syncToken = requiredSecret(env, "SYNC_TOKEN");
-    requireBearerToken(request, syncToken);
+    requireBearerToken(request, [syncToken, env.ACTIONS_TOKEN]);
 
     if (env.CONFIG_KV && typeof env.CONFIG_KV.get === "function") {
       const response = await callKv(request, env);

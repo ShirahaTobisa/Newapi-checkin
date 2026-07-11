@@ -258,6 +258,16 @@ test("GET preserves upstream 404 to represent a config that has not been saved",
   assert.equal((await errorBody(response)).error.code, "config_not_found");
 });
 
+test("GET accepts the optional Actions-only Bearer token", async () => {
+  const response = await handleRequest(
+    request("GET", { headers: { Authorization: "Bearer actions-secret" } }),
+    { ...defaultEnv, ACTIONS_TOKEN: "actions-secret", CONFIG_KV: mockKv('{"accounts":[]}') },
+  );
+
+  assert.equal(response.status, 200);
+  assert.equal(await response.text(), '{"accounts":[]}');
+});
+
 test("GET treats JianGuoYun's Cloudflare-facing 520 as a missing config", async () => {
   const response = await handleRequest(request("GET"), defaultEnv, async () =>
     new Response("webdav error", { status: 520 }),
