@@ -587,6 +587,7 @@ def run_gwent_tasks(accounts: list, draw_count: int) -> bool:
 
     success_count = 0
     fail_count = 0
+    error_count = 0
 
     for position, (index, account, client) in enumerate(targets, 1):
         name = account.get('name') or f'账号{index}'
@@ -631,13 +632,18 @@ def run_gwent_tasks(accounts: list, draw_count: int) -> bool:
             print(f'  小结: ✅ 完成 {completed}/{draw_count} 次，合计 +{total_quota:,} 额度')
         else:
             fail_count += 1
-            print(f'  小结: ❌ 完成 {completed}/{draw_count} 次')
+            last_message = results[-1].get('message', '') if results else ''
+            if '冷却' in last_message:
+                print(f'  小结: ⏳ 完成 {completed}/{draw_count} 次，剩余次数仍在冷却')
+            else:
+                error_count += 1
+                print(f'  小结: ❌ 完成 {completed}/{draw_count} 次')
         print()
 
     print('=' * 50)
-    print(f'翻牌完成: 成功 {success_count}, 失败 {fail_count}')
+    print(f'翻牌完成: 全部完成 {success_count}, 未满 {fail_count}, 实际错误 {error_count}')
     print('=' * 50)
-    return fail_count != len(targets)
+    return error_count != len(targets)
 
 
 def main():
