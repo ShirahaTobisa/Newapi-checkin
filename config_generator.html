@@ -183,37 +183,29 @@
             color: #c4b5fd;
         }
 
-        .cors-proxy-section {
+        .relay-guide {
             margin-top: 12px;
             padding: 16px;
-            background: rgba(245, 158, 11, 0.06);
-            border: 1px solid rgba(245, 158, 11, 0.15);
+            background: rgba(52, 211, 153, 0.06);
+            border: 1px solid rgba(52, 211, 153, 0.18);
             border-radius: 12px;
             animation: noticeIn 0.5s ease-out;
-        }
-
-        .cors-proxy-section .cors-proxy-toggle {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            margin-bottom: 10px;
-            color: rgba(255, 255, 255, 0.75);
+            color: rgba(255, 255, 255, 0.68);
             font-size: 14px;
-            cursor: pointer;
+            line-height: 1.7;
         }
 
-        .cors-proxy-section .cors-proxy-toggle input[type="checkbox"] {
-            width: 18px;
-            height: 18px;
-            accent-color: #f59e0b;
-            cursor: pointer;
+        .relay-guide strong {
+            color: #34d399;
         }
 
-        .cors-proxy-section .cors-proxy-warning {
-            font-size: 12px;
-            color: rgba(245, 101, 101, 0.8);
-            margin-top: 8px;
-            line-height: 1.5;
+        .relay-guide code,
+        .relay-guide a {
+            color: #a78bfa;
+        }
+
+        .relay-guide a {
+            text-decoration: none;
         }
 
         @keyframes noticeIn {
@@ -884,211 +876,6 @@
 
             .back-link { display: none; }
         }
-        /* ─── CORS Proxy Picker ─────────────────────────────────── */
-
-        .cors-proxy-picker-btn {
-            width: 100%;
-            padding: 12px 16px;
-            border: 1px solid rgba(255, 255, 255, 0.1);
-            border-radius: 10px;
-            background: rgba(255, 255, 255, 0.06);
-            color: rgba(255, 255, 255, 0.9);
-            font-size: 14px;
-            cursor: pointer;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            transition: border-color 0.2s, background 0.2s;
-        }
-
-        .cors-proxy-picker-btn:hover {
-            border-color: rgba(255, 255, 255, 0.2);
-            background: rgba(255, 255, 255, 0.1);
-        }
-
-        .cors-proxy-picker-btn .cors-proxy-picker-arrow {
-            margin-left: auto;
-            font-size: 12px;
-            color: rgba(255, 255, 255, 0.35);
-            transition: transform 0.2s;
-        }
-
-        .cors-proxy-picker-btn.open .cors-proxy-picker-arrow {
-            transform: rotate(90deg);
-        }
-
-        .cors-proxy-friendly-name {
-            font-size: 12px;
-            color: #a78bfa;
-            margin-top: 4px;
-        }
-
-        /* Modal Overlay */
-        .cors-modal-overlay {
-            position: fixed;
-            inset: 0;
-            z-index: 9999;
-            background: rgba(0, 0, 0, 0.6);
-            backdrop-filter: blur(4px);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            animation: fadeIn 0.15s ease-out;
-        }
-
-        .cors-modal-overlay.hidden {
-            display: none;
-        }
-
-        .cors-modal {
-            background: #1a1a2e;
-            border: 1px solid rgba(255, 255, 255, 0.12);
-            border-radius: 18px;
-            width: min(480px, 92vw);
-            max-height: 75vh;
-            display: flex;
-            flex-direction: column;
-            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
-            animation: scaleIn 0.2s ease-out;
-            overflow: hidden;
-        }
-
-        .cors-modal-header {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            padding: 20px 24px 0;
-        }
-
-        .cors-modal-header h3 {
-            font-size: 16px;
-            color: rgba(255, 255, 255, 0.9);
-            margin: 0;
-        }
-
-        .cors-modal-close {
-            background: none;
-            border: none;
-            font-size: 20px;
-            color: rgba(255, 255, 255, 0.4);
-            cursor: pointer;
-            padding: 4px 8px;
-            border-radius: 6px;
-            line-height: 1;
-        }
-
-        .cors-modal-close:hover {
-            color: rgba(255, 255, 255, 0.85);
-            background: rgba(255, 255, 255, 0.06);
-        }
-
-        .cors-modal-search {
-            margin: 14px 20px 0;
-        }
-
-        .cors-modal-search input {
-            width: 100%;
-            padding: 10px 14px;
-            border: 1px solid rgba(255, 255, 255, 0.1);
-            border-radius: 10px;
-            background: rgba(255, 255, 255, 0.05);
-            color: rgba(255, 255, 255, 0.85);
-            font-size: 13px;
-            outline: none;
-        }
-
-        .cors-modal-search input:focus {
-            border-color: rgba(167, 139, 250, 0.5);
-        }
-
-        .cors-modal-search input::placeholder {
-            color: rgba(255, 255, 255, 0.3);
-        }
-
-        .cors-modal-body {
-            padding: 10px 14px 14px;
-            overflow-y: auto;
-            flex: 1;
-        }
-
-        .cors-proxy-opt {
-            display: flex;
-            flex-direction: column;
-            gap: 4px;
-            padding: 12px 14px;
-            border-radius: 12px;
-            cursor: pointer;
-            transition: background 0.15s;
-            border: 1px solid transparent;
-        }
-
-        .cors-proxy-opt:hover {
-            background: rgba(167, 139, 250, 0.08);
-            border-color: rgba(167, 139, 250, 0.18);
-        }
-
-        .cors-proxy-opt.active {
-            background: rgba(167, 139, 250, 0.14);
-            border-color: rgba(167, 139, 250, 0.35);
-        }
-
-        .cors-proxy-opt-name {
-            font-size: 14px;
-            font-weight: 500;
-            color: rgba(255, 255, 255, 0.85);
-        }
-
-        .cors-proxy-opt-host {
-            font-size: 12px;
-            color: rgba(255, 255, 255, 0.35);
-            font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
-        }
-
-        .cors-proxy-opt-tag {
-            display: inline-block;
-            margin-top: 4px;
-            padding: 2px 7px;
-            border-radius: 4px;
-            font-size: 11px;
-            font-weight: 500;
-        }
-
-        .cors-proxy-opt-tag.recommended {
-            background: rgba(52, 211, 153, 0.12);
-            color: #34d399;
-        }
-
-        .cors-proxy-opt-tag.note {
-            background: rgba(245, 158, 11, 0.12);
-            color: #fbbf24;
-        }
-
-        .cors-proxy-opt-tag.warn {
-            background: rgba(245, 101, 101, 0.12);
-            color: #f87171;
-        }
-
-        .cors-proxy-custom {
-            border-top: 1px solid rgba(255, 255, 255, 0.08);
-            margin-top: 4px;
-            padding-top: 10px;
-        }
-
-        .cors-proxy-custom-name {
-            font-size: 14px;
-            color: rgba(255, 255, 255, 0.6);
-        }
-
-        @keyframes fadeIn {
-            from { opacity: 0; }
-            to { opacity: 1; }
-        }
-
-        @keyframes scaleIn {
-            from { transform: scale(0.95); opacity: 0; }
-            to { transform: scale(1); opacity: 1; }
-        }
-
         </style>
 </head>
 <body>
@@ -1103,8 +890,8 @@
             <div id="cors-notice" class="cors-notice" style="display: none;">
                 <span class="cors-icon">⚠️</span>
                 <div>
-                    <strong id="cors-notice-title">当前页面以网络协议运行，云端同步可能受 CORS 跨域限制。</strong><br>
-                    <span id="cors-notice-tips" style="color: rgba(255,255,255,0.6);">如遇连接失败，推荐优先在云端同步中启用 <strong>CORS 代理</strong>。</span>
+                    <strong id="cors-notice-title">浏览器云同步需要服务端明确允许跨域访问。</strong><br>
+                    <span id="cors-notice-tips" style="color: rgba(255,255,255,0.6);">坚果云请使用项目自带的<strong>私有 Worker 中继</strong>。</span>
                 </div>
             </div>
             <div id="sites-container"></div>
@@ -1135,9 +922,9 @@
 
                 <div class="cloud-fields">
                     <div class="form-group">
-                        <label>WebDAV 地址 <span class="required">*</span></label>
-                        <input type="text" id="cloud-url" placeholder="https://dav.jianguoyun.com/dav/">
-                        <small>WebDAV 服务地址，末尾需包含文件路径</small>
+                        <label><span id="cloud-url-label">WebDAV 地址</span> <span class="required">*</span></label>
+                        <input type="text" id="cloud-url" placeholder="https://dav.example.com/path/">
+                        <small id="cloud-url-help">WebDAV 目录地址；配置文件名在下方单独填写</small>
                     </div>
                     <div class="form-group">
                         <label>认证方式</label>
@@ -1151,21 +938,27 @@
                 <div class="cloud-fields" id="cloud-basic-auth-fields" style="margin-top: 16px;">
                     <div class="form-group">
                         <label>用户名</label>
-                        <input type="text" id="cloud-username" placeholder="坚果云：邮箱；群晖：系统用户名">
+                        <input type="text" id="cloud-username" placeholder="群晖 / NextCloud / WebDAV 用户名">
                     </div>
                     <div class="form-group">
                         <label>密码 / 应用密码</label>
-                        <input type="password" id="cloud-password" placeholder="坚果云需使用应用专用密码">
-                        <small>坚果云请在账户设置中创建「应用密码」</small>
+                        <input type="password" id="cloud-password" placeholder="WebDAV 密码或应用密码">
+                        <small>服务启用 2FA 时，通常需要创建应用密码</small>
                     </div>
                 </div>
 
                 <div class="form-group" id="cloud-token-field" style="margin-top: 16px; display: none;">
-                    <label>访问令牌</label>
+                    <label id="cloud-token-label">访问令牌</label>
                     <input type="password" id="cloud-token" placeholder="WebDAV 访问令牌">
+                    <small id="cloud-token-help"></small>
                 </div>
 
-                <div class="cloud-path-row">
+                <label style="display:flex;align-items:center;gap:8px;margin-top:12px;color:rgba(255,255,255,0.58);font-size:12px;cursor:pointer;">
+                    <input type="checkbox" id="cloud-remember-credentials" style="width:16px;height:16px;accent-color:#34d399;">
+                    在此浏览器记住密码或同步令牌（将以明文写入 localStorage，仅限私人设备）
+                </label>
+
+                <div class="cloud-path-row" id="cloud-path-row">
                     <div class="form-group" style="margin-bottom: 0;">
                         <label>文件名</label>
                         <input type="text" id="cloud-filename" value="newapi-config.json" placeholder="newapi-config.json">
@@ -1173,24 +966,12 @@
                     </div>
                 </div>
 
-                <div class="cors-proxy-section" id="cors-proxy-section">
-                    <label class="cors-proxy-toggle">
-                        <input type="checkbox" id="cors-proxy-enabled" onchange="toggleCorsProxy()">
-                        <span>方案三：CORS 代理（临时最快，不推荐存敏感数据）</span>
-                    </label>
-                    <div class="form-group" id="cors-proxy-field" style="display: none;">
-                        <label style="color: rgba(255,255,255,0.65);">CORS 代理地址</label>
-                        <button type="button" class="cors-proxy-picker-btn" id="cors-proxy-picker-btn" onclick="openCorsProxyPicker()">
-                            <span id="cors-proxy-current-label">选择内置代理或填写自定义地址</span>
-                            <span class="cors-proxy-picker-arrow">▸</span>
-                        </button>
-                        <input type="text" id="cors-proxy-url" placeholder="或直接在此粘贴代理地址" style="display: none; margin-bottom: 10px;" oninput="updateCorsProxyPreview()">
-                        <small>代理地址拼在 WebDAV 地址前面，实际请求变为：<code id="cors-proxy-preview" style="color:#a78bfa;">代理地址 + WebDAV地址</code></small>
-                        <div id="cors-proxy-friendly-name" class="cors-proxy-friendly-name"></div>
-                    </div>
-                    <div class="cors-proxy-warning" id="cors-proxy-warning" style="display: none;">
-                        ⚠️ 安全提示：CORS 代理会让你的账号密码经第三方服务器转发，请勿用于存放敏感隐私数据的账号。推荐优先使用 <strong>方案一（本地打开）</strong>。
-                    </div>
+                <div class="relay-guide" id="relay-guide" style="display: none;">
+                    <strong>🔐 坚果云需要你自己的私有同步中继</strong><br>
+                    坚果云不向浏览器开放 CORS，在线页面和本地 HTML 都不能直接连接。请先部署仓库 <code>worker/</code> 中的 Cloudflare Worker，
+                    再在上方填写它的 <code>/api/config</code> 地址和 <code>SYNC_TOKEN</code>。
+                    Worker 只连接固定的坚果云配置文件，不是公共代理，也不会把应用密码交给第三方服务。
+                    <a href="https://github.com/ShirahaTobisa/Newapi-checkin/tree/main/worker" target="_blank" rel="noopener noreferrer">查看部署说明 ↗</a>
                 </div>
 
                 <div id="cloud-status" class="cloud-status"></div>
@@ -1221,9 +1002,11 @@
                             <a href="https://help.jianguoyun.com/?tag=webdav" target="_blank" style="color: #a78bfa; font-size: 13px; margin-left: 6px;">官方文档 ↗</a>
                             <a href="https://content.jianguoyun.com/664.html" target="_blank" style="color: #a78bfa; font-size: 13px; margin-left: 6px;">应用密码创建 ↗</a>
                             <ul style="margin-left: 20px; color: rgba(255,255,255,0.65); font-size: 13px; line-height: 1.7; margin-top: 4px;">
-                                <li>WebDAV 地址：<code>https://dav.jianguoyun.com/dav/邮箱/</code></li>
+                                <li>浏览器不能直连坚果云 WebDAV；先部署仓库 <code>worker/</code> 中的私有 Cloudflare Worker</li>
+                                <li>页面同步地址：<code>https://你的-worker.workers.dev/api/config</code></li>
+                                <li>Worker Secrets：<code>JIANGUO_USERNAME</code>、<code>JIANGUO_APP_PASSWORD</code>、<code>SYNC_TOKEN</code></li>
                                 <li>创建应用密码：登录坚果云 → <a href="https://www.jianguoyun.com/account/info" target="_blank" style="color: #a78bfa;">账户信息 ↗</a> → 安全选项 → 第三方应用管理 → 添加应用密码</li>
-                                <li>用户名：坚果云注册邮箱；密码：生成的应用专用密码（不是登录密码）</li>
+                                <li>坚果云凭据只保存在你的 Worker Secrets 中，不会存进网页或经公共代理转发</li>
                             </ul>
                         </div>
 
@@ -1259,21 +1042,12 @@
                         </div>
 
                     <div style="margin-top: 16px; padding-top: 16px; border-top: 1px solid rgba(52,211,153,0.15);">
-                        <h4 style="color: #fbbf24; margin-bottom: 12px; font-size: 14px;">⚠️ CORS 跨域限制解决方案：</h4>
+                        <h4 style="color: #fbbf24; margin-bottom: 12px; font-size: 14px;">⚠️ 浏览器跨域说明：</h4>
                         <ul style="margin-left: 20px; color: rgba(255,255,255,0.65); font-size: 13px; line-height: 1.8;">
-                            <li><strong>方案一（推荐）：</strong>本地打开 HTML 文件（<code>file://</code> 协议），CORS 限制自动绕过</li>
-                            <li><strong>方案二：</strong>群晖/NextCloud 在服务端添加 CORS 头 <code>Access-Control-Allow-Origin</code></li>
-                            <li><strong>方案三：</strong>坚果云不支持自定义 CORS，请用方案一</li>
-                            <li><strong>方案三（最快）：</strong>使用内置 CORS 代理，下列代理任选其一，无需修改服务端配置
-                        <ul style="margin-left: 16px; margin-top: 4px; font-size: 12px;">
-                            <li>👉 <strong>AllOrigins</strong>（api.allorigins.win）— 免费，选这个先试</li>
-                            <li>👉 <strong>CORSProxy</strong>（corsproxy.io）— 免费，HTTPS</li>
-                            <li>👉 <strong>CodeTabs</strong>（api.codetabs.com）— 免费，首次可能需等几秒</li>
-                            <li>👉 <strong>ThingProxy</strong>（thingproxy.freeboard.io）— 免费</li>
-                            <li>⚠️ <strong>CORS Anywhere</strong>（herokuapp.com）— 需先打开其首页点 <em>Request temporary access</em> 激活</li>
-                        </ul>
-                    </li>
-                    <li>⚠️ CORS 代理意味着账号密码会经第三方转发，请勿用于敏感数据账号</li>
+                            <li><code>file://</code> 和 Firefox 同样受 CORS 限制，下载页面不能绕过服务端策略</li>
+                            <li>群晖、NextCloud 和自定义 WebDAV 必须在服务端允许当前页面 Origin、<code>Authorization</code>、<code>GET</code> 与 <code>PUT</code></li>
+                            <li>坚果云请选择上方“坚果云”预设，并使用仓库自带的私有 Worker 中继</li>
+                            <li>公共 CORS 代理通常不支持 WebDAV 写入，并会接触账号凭据，因此本项目不再提供</li>
                         </ul>
                     </div>
                 </div>
@@ -1768,42 +1542,38 @@
 
             try {
                 const config = JSON.parse(saved);
+                const isLegacyJianguoyun = /dav\.jianguoyun\.com/i.test(config.url || '');
+                if (isLegacyJianguoyun) {
+                    localStorage.removeItem(CLOUD_STORAGE_KEY);
+                    showCloudStatus('info', '已清除旧版坚果云直连配置。请部署私有 Worker 后填写同步地址和令牌。');
+                    activateCloudPreset('jianguoyun');
+                    updateCloudPresetUi('jianguoyun', true);
+                    return;
+                }
+
                 document.getElementById('cloud-url').value = config.url || '';
                 document.getElementById('cloud-auth-type').value = config.authType || 'basic';
                 document.getElementById('cloud-username').value = config.username || '';
-                document.getElementById('cloud-password').value = config.password || '';
-                document.getElementById('cloud-token').value = config.token || '';
+                const rememberCredentials = config.rememberCredentials === true;
+                document.getElementById('cloud-remember-credentials').checked = rememberCredentials;
+                document.getElementById('cloud-password').value = rememberCredentials ? (config.password || '') : '';
+                document.getElementById('cloud-token').value = rememberCredentials ? (config.token || '') : '';
                 document.getElementById('cloud-filename').value = config.filename || 'newapi-config.json';
-                document.getElementById('cors-proxy-enabled').checked = config.corsProxyEnabled || false;
-                document.getElementById('cors-proxy-url').value = config.corsProxyUrl || '';
 
-                if (config.authType === 'token') {
-                    document.getElementById('cloud-basic-auth-fields').style.display = 'none';
-                    document.getElementById('cloud-token-field').style.display = 'block';
+                if (!rememberCredentials && (config.password || config.token)) {
+                    config.password = '';
+                    config.token = '';
+                    localStorage.setItem(CLOUD_STORAGE_KEY, JSON.stringify(config));
                 }
 
-                if (config.corsProxyEnabled) {
-                    document.getElementById('cors-proxy-field').style.display = 'block';
-                    document.getElementById('cors-proxy-warning').style.display = 'block';
-                    document.getElementById('cors-proxy-url').style.display = 'block';
-                    if (config.corsProxyUrl) {
-                        const matched = CORS_PROXIES.find(p => p.url === config.corsProxyUrl);
-                        const label = matched ? matched.name : '自定义代理';
-                        document.getElementById('cors-proxy-friendly-name').textContent = `✅ 已选择：${label}`;
-                        document.getElementById('cors-proxy-picker-btn').innerHTML = `<span>${matched ? matched.name : '自定义代理'}</span><span class="cors-proxy-picker-arrow">▸</span>`;
-                        document.getElementById('cors-proxy-picker-btn').classList.add('selected');
-                    }
-                }
-
-                if (config.preset) {
-                    document.querySelectorAll('.cloud-preset-btn').forEach(b => b.classList.remove('active'));
-                    const presetBtn = document.getElementById(`preset-${config.preset}`);
-                    if (presetBtn) presetBtn.classList.add('active');
-                }
+                const preset = config.preset || 'custom';
+                activateCloudPreset(preset);
+                updateCloudPresetUi(preset, false);
 
                 updateSavedConfigDisplay(config);
-                updateCorsProxyPreview();
-            } catch (e) {}
+            } catch (e) {
+                localStorage.removeItem(CLOUD_STORAGE_KEY);
+            }
         }
 
         function toggleCloudSync() {
@@ -1817,50 +1587,91 @@
             }
         }
 
-        function applyCloudPreset(preset) {
+        function activateCloudPreset(preset) {
             document.querySelectorAll('.cloud-preset-btn').forEach(b => b.classList.remove('active'));
-            document.getElementById(`preset-${preset}`).classList.add('active');
+            document.getElementById(`preset-${preset}`)?.classList.add('active');
+        }
 
+        function syncCloudAuthFields() {
+            const authType = document.getElementById('cloud-auth-type').value;
+            document.getElementById('cloud-basic-auth-fields').style.display = authType === 'basic' ? 'grid' : 'none';
+            document.getElementById('cloud-token-field').style.display = authType === 'token' ? 'block' : 'none';
+        }
+
+        function updateCloudPresetUi(preset, applyDefaults) {
             const urlInput = document.getElementById('cloud-url');
+            const urlLabel = document.getElementById('cloud-url-label');
+            const urlHelp = document.getElementById('cloud-url-help');
+            const authSelect = document.getElementById('cloud-auth-type');
             const usernameInput = document.getElementById('cloud-username');
             const passwordInput = document.getElementById('cloud-password');
-            const filenameInput = document.getElementById('cloud-filename');
+            const tokenInput = document.getElementById('cloud-token');
+            const tokenLabel = document.getElementById('cloud-token-label');
+            const tokenHelp = document.getElementById('cloud-token-help');
+            const pathRow = document.getElementById('cloud-path-row');
+            const relayGuide = document.getElementById('relay-guide');
+
+            const isJianguoyun = preset === 'jianguoyun';
+            relayGuide.style.display = isJianguoyun ? 'block' : 'none';
+            pathRow.style.display = isJianguoyun ? 'none' : '';
+            authSelect.disabled = isJianguoyun;
 
             switch (preset) {
                 case 'jianguoyun':
-                    urlInput.value = 'https://dav.jianguoyun.com/dav/';
-                    usernameInput.placeholder = '坚果云注册邮箱（如 user@example.com）';
-                    passwordInput.placeholder = '应用专用密码 → 账户信息 → 安全选项 → 添加应用密码';
+                    if (applyDefaults) {
+                        urlInput.value = '';
+                        usernameInput.value = '';
+                        passwordInput.value = '';
+                        tokenInput.value = '';
+                    }
+                    authSelect.value = 'token';
+                    urlLabel.textContent = 'Worker 同步地址';
+                    urlInput.placeholder = 'https://你的-worker.workers.dev/api/config';
+                    urlHelp.textContent = '填写仓库 worker/ 部署后的 HTTPS 地址；省略 /api/config 时会自动补全';
+                    tokenLabel.textContent = '同步令牌';
+                    tokenInput.placeholder = '与 Worker Secret SYNC_TOKEN 完全一致';
+                    tokenHelp.textContent = '该令牌用于浏览器和 GitHub Actions 访问你的私有中继';
                     break;
                 case 'synology':
-                    urlInput.value = 'https://NAS域名:5006/webdav/';
+                    if (applyDefaults) urlInput.value = 'https://NAS域名:5006/webdav/';
+                    if (applyDefaults) authSelect.value = 'basic';
                     usernameInput.placeholder = '群晖系统用户名';
                     passwordInput.placeholder = '群晖用户密码';
                     break;
                 case 'nextcloud':
-                    urlInput.value = 'https://域名/remote.php/dav/files/用户名/';
+                    if (applyDefaults) urlInput.value = 'https://域名/remote.php/dav/files/用户名/';
+                    if (applyDefaults) authSelect.value = 'basic';
                     usernameInput.placeholder = 'NextCloud 用户名';
                     passwordInput.placeholder = 'NextCloud 密码（启用了 2FA 请用应用密码）';
                     break;
                 case 'custom':
-                    urlInput.value = '';
+                    if (applyDefaults) urlInput.value = '';
+                    if (applyDefaults) authSelect.value = 'basic';
                     usernameInput.placeholder = '用户名';
                     passwordInput.placeholder = '密码 / 令牌';
                     break;
             }
-            saveCloudConfigToLocal();
+
+            if (!isJianguoyun) {
+                urlLabel.textContent = 'WebDAV 地址';
+                urlInput.placeholder = preset === 'custom' ? 'https://dav.example.com/path/' : urlInput.placeholder;
+                urlHelp.textContent = 'WebDAV 目录地址；服务器必须允许当前页面进行跨域 GET/PUT 请求';
+                tokenLabel.textContent = '访问令牌';
+                tokenInput.placeholder = 'WebDAV 访问令牌';
+                tokenHelp.textContent = '';
+            }
+
+            syncCloudAuthFields();
+        }
+
+        function applyCloudPreset(preset) {
+            activateCloudPreset(preset);
+            updateCloudPresetUi(preset, true);
+            autoSaveCloudConfig();
         }
 
         document.getElementById('cloud-auth-type').addEventListener('change', function() {
-            const basicFields = document.getElementById('cloud-basic-auth-fields');
-            const tokenField = document.getElementById('cloud-token-field');
-            if (this.value === 'basic') {
-                basicFields.style.display = 'grid';
-                tokenField.style.display = 'none';
-            } else {
-                basicFields.style.display = 'none';
-                tokenField.style.display = 'block';
-            }
+            syncCloudAuthFields();
         });
 
         function saveCloudConfigToLocal() {
@@ -1870,17 +1681,19 @@
             const password = document.getElementById('cloud-password').value.trim();
             const token = document.getElementById('cloud-token').value.trim();
             const filename = document.getElementById('cloud-filename').value.trim() || 'newapi-config.json';
-            const corsProxyEnabled = document.getElementById('cors-proxy-enabled').checked;
-            const corsProxyUrl = document.getElementById('cors-proxy-url').value.trim();
+            const rememberCredentials = document.getElementById('cloud-remember-credentials').checked;
 
             if (!url) {
-                showCloudStatus('error', '请先填写 WebDAV 地址再保存配置');
+                showCloudStatus('error', '请先填写同步地址再保存配置');
                 return;
             }
 
             const config = {
-                url, authType, username, password, token, filename,
-                corsProxyEnabled, corsProxyUrl,
+                url, authType, username,
+                password: rememberCredentials ? password : '',
+                token: rememberCredentials ? token : '',
+                filename,
+                rememberCredentials,
                 preset: document.querySelector('.cloud-preset-btn.active')?.id?.replace('preset-', '') || ''
             };
 
@@ -1918,16 +1731,15 @@
 
         function autoSaveCloudConfig() {
             const url = document.getElementById('cloud-url').value.trim();
-            if (!url) return;
+            const rememberCredentials = document.getElementById('cloud-remember-credentials').checked;
             const config = {
                 url,
                 authType: document.getElementById('cloud-auth-type').value,
                 username: document.getElementById('cloud-username').value.trim(),
-                password: document.getElementById('cloud-password').value.trim(),
-                token: document.getElementById('cloud-token').value.trim(),
+                password: rememberCredentials ? document.getElementById('cloud-password').value.trim() : '',
+                token: rememberCredentials ? document.getElementById('cloud-token').value.trim() : '',
                 filename: document.getElementById('cloud-filename').value.trim() || 'newapi-config.json',
-                corsProxyEnabled: document.getElementById('cors-proxy-enabled').checked,
-                corsProxyUrl: document.getElementById('cors-proxy-url').value.trim(),
+                rememberCredentials,
                 preset: document.querySelector('.cloud-preset-btn.active')?.id?.replace('preset-', '') || ''
             };
             try {
@@ -1937,12 +1749,12 @@
         }
 
         function initCloudAutoSave() {
-            ['cloud-url', 'cloud-username', 'cloud-password', 'cloud-token', 'cloud-filename', 'cors-proxy-url'].forEach(id => {
+            ['cloud-url', 'cloud-username', 'cloud-password', 'cloud-token', 'cloud-filename'].forEach(id => {
                 const el = document.getElementById(id);
                 if (el) el.addEventListener('input', autoSaveCloudConfig);
             });
             document.getElementById('cloud-auth-type').addEventListener('change', autoSaveCloudConfig);
-            document.getElementById('cors-proxy-enabled').addEventListener('change', autoSaveCloudConfig);
+            document.getElementById('cloud-remember-credentials').addEventListener('change', autoSaveCloudConfig);
         }
 
         initCloudAutoSave();
@@ -1952,174 +1764,18 @@
             const noticeEl = document.getElementById('cors-notice');
             const titleEl = document.getElementById('cors-notice-title');
             const tipsEl = document.getElementById('cors-notice-tips');
-            const isChrome = /Chrome\//.test(navigator.userAgent) && !/Edg\//.test(navigator.userAgent);
+            noticeEl.style.display = 'flex';
 
             if (protocol === 'file:') {
-                if (isChrome) {
-                    noticeEl.style.display = 'flex';
-                    titleEl.textContent = 'Chrome 本地打开仍受跨域限制，无法直接请求 HTTPS 地址。';
-                    tipsEl.innerHTML = '推荐在云端同步中启用 <strong>CORS 代理</strong>，或使用 <strong>Firefox</strong> 浏览器打开本文件（Firefox 允许 file:// 跨域请求）。';
-                } else {
-                    noticeEl.style.display = 'none';
-                }
+                titleEl.textContent = '本地 HTML 同样受浏览器 CORS 限制。';
             } else {
-                noticeEl.style.display = 'flex';
-                titleEl.textContent = '当前页面以网络协议运行，云端同步受 CORS 跨域限制。';
-                tipsEl.innerHTML = '推荐在云端同步中启用 <strong>CORS 代理</strong>，或 <a href="javascript:void(0)" onclick="downloadThisPage()" style="color:#a78bfa;">下载到本地</a>后用 <strong>Firefox</strong> 打开。群晖/NextCloud 可在服务端配置 CORS 头。';
+                titleEl.textContent = '浏览器云同步需要服务端明确允许跨域访问。';
             }
+
+            tipsEl.innerHTML = '坚果云请使用项目自带的<strong>私有 Worker 中继</strong>；群晖、NextCloud 和自定义 WebDAV 需在服务端允许当前页面 Origin、Authorization、GET 与 PUT。';
         })();
 
-        // ─── CORS Proxy Picker ─────────────────────────────────────
-
-        const CORS_PROXIES = [
-            {
-                url: 'https://api.allorigins.win/raw?url=',
-                name: 'AllOrigins',
-                host: 'api.allorigins.win',
-                note: '免费，无需申请，推荐首选',
-                tag: 'recommended',
-            },
-            {
-                url: 'https://corsproxy.io/?',
-                name: 'CORSProxy',
-                host: 'corsproxy.io',
-                note: '免费，HTTPS',
-                tag: 'recommended',
-            },
-            {
-                url: 'https://api.codetabs.com/v1/proxy?quest=',
-                name: 'CodeTabs',
-                host: 'api.codetabs.com',
-                note: '免费，首次请求可能需等待 2–3 秒',
-                tag: 'note',
-            },
-            {
-                url: 'https://thingproxy.freeboard.io/fetch/',
-                name: 'ThingProxy',
-                host: 'thingproxy.freeboard.io',
-                note: '免费，适合 JSON 接口',
-                tag: 'note',
-            },
-            {
-                url: 'https://cors-anywhere.herokuapp.com/',
-                name: 'CORS Anywhere',
-                host: 'cors-anywhere.herokuapp.com',
-                note: '需先打开其首页点击 Request temporary access 激活',
-                tag: 'warn',
-            },
-            {
-                url: 'https://api.codetabs.com/v1/proxy?quest=',
-                name: 'AllOrigins Fallback',
-                host: 'api.allorigins.win/raw',
-                note: '备用镜像',
-                tag: 'note',
-            },
-        ];
-
-        function renderCorsProxyList(filter) {
-            const q = (filter || '').toLowerCase();
-            const body = document.getElementById('cors-modal-body');
-            const currentUrl = document.getElementById('cors-proxy-url').value.trim();
-
-            body.innerHTML = CORS_PROXIES.filter(p => {
-                if (!q) return true;
-                return p.name.toLowerCase().includes(q) || p.host.toLowerCase().includes(q);
-            }).map(p => {
-                const isActive = p.url === currentUrl;
-                const tagMap = {
-                    recommended: { text: '推荐', cls: 'recommended' },
-                    note: { text: '提示', cls: 'note' },
-                    warn: { text: '注意', cls: 'warn' },
-                };
-                const tag = tagMap[p.tag] || null;
-                return `
-                    <div class="cors-proxy-opt${isActive ? ' active' : ''}" data-url="${p.url}" onclick="selectCorsProxy('${p.url}', '${p.name}')">
-                        <div class="cors-proxy-opt-name">${p.name}</div>
-                        <div class="cors-proxy-opt-host">${p.host}</div>
-                        <span class="cors-proxy-opt-tag ${tag.cls}">${tag.text}</span>
-                        <span style="font-size:12px;color:rgba(255,255,255,0.35);margin-left:6px;">${p.note}</span>
-                        ${isActive ? '<span class="cors-proxy-opt-tag recommended" style="margin-left:8px;">✓ 当前</span>' : ''}
-                    </div>`;
-            }).join('');
-
-            // 自定义地址选项
-            body.innerHTML += `
-                <div class="cors-proxy-opt cors-proxy-custom" onclick="selectCustomProxy()">
-                    <div class="cors-proxy-opt-name">✏️ 手动输入自定义地址</div>
-                    <div class="cors-proxy-opt-custom-tip" style="font-size:12px;color:rgba(255,255,255,0.35);margin-top:4px;">粘贴你自己的 CORS 代理或自建代理地址</div>
-                </div>`;
-        }
-
-        function openCorsProxyPicker() {
-            const overlay = document.getElementById('cors-modal-overlay');
-            overlay.classList.remove('hidden');
-            renderCorsProxyList('');
-            // focus 搜索框
-            requestAnimationFrame(() => {
-                document.getElementById('cors-modal-search').value = '';
-                document.getElementById('cors-modal-search').focus();
-            });
-            // 标记按钮为打开态
-            document.getElementById('cors-proxy-picker-btn').classList.add('open');
-        }
-
-        function closeCorsProxyPicker() {
-            document.getElementById('cors-modal-overlay').classList.add('hidden');
-            document.getElementById('cors-proxy-picker-btn').classList.remove('open');
-        }
-
-        function closeCorsProxyPickerOutside(e) {
-            if (e.target === document.getElementById('cors-modal-overlay')) {
-                closeCorsProxyPicker();
-            }
-        }
-
-        function filterCorsProxies(val) {
-            renderCorsProxyList(val);
-        }
-
-        function selectCorsProxy(url, name) {
-            document.getElementById('cors-proxy-url').value = url;
-            document.getElementById('cors-proxy-url').style.display = 'block';
-            document.getElementById('cors-proxy-friendly-name').textContent = `✅ 已选择：${name}（${url}）`;
-            closeCorsProxyPicker();
-            updateCorsProxyPreview();
-            autoSaveCloudConfig();
-        }
-
-        function selectCustomProxy() {
-            closeCorsProxyPicker();
-            const input = document.getElementById('cors-proxy-url');
-            input.style.display = 'block';
-            input.value = '';
-            input.focus();
-            document.getElementById('cors-proxy-friendly-name').textContent = '';
-            updateCorsProxyPreview();
-            autoSaveCloudConfig();
-        }
-
-        // ESC 关闭
-        document.addEventListener('keydown', (e) => {
-            if (e.key === 'Escape') closeCorsProxyPicker();
-        });
-
-        function toggleCorsProxy() {
-            const enabled = document.getElementById('cors-proxy-enabled').checked;
-            document.getElementById('cors-proxy-warning').style.display = enabled ? 'block' : 'none';
-            if (enabled) {
-                openCorsProxyPicker();
-            } else {
-                document.getElementById('cors-proxy-url').style.display = 'none';
-                document.getElementById('cors-proxy-url').value = '';
-                document.getElementById('cors-proxy-friendly-name').textContent = '';
-                const btn = document.getElementById('cors-proxy-picker-btn');
-                btn.innerHTML = '<span>选择内置代理或填写自定义地址</span><span class="cors-proxy-picker-arrow">▸</span>';
-                btn.classList.remove('selected');
-                updateCorsProxyPreview();
-                autoSaveCloudConfig();
-            }
-        }
-
+        // 坚果云通过仓库自带的私有 Worker 中继访问；不再内置公共 CORS 代理。
         // ─── 下载页面代码（恢复逻辑已移至 loadCloudConfigFromLocal）──
 
         function downloadThisPage() {
@@ -2141,38 +1797,55 @@
 
             if (!baseUrl) return null;
 
-            if (!baseUrl.endsWith('/')) baseUrl += '/';
-
             const preset = document.querySelector('.cloud-preset-btn.active')?.id?.replace('preset-', '') || '';
 
             if (preset === 'jianguoyun') {
-                const username = document.getElementById('cloud-username').value.trim();
-                if (username) {
-                    baseUrl += `${username}/${filename}`;
-                } else {
-                    baseUrl += filename;
+                try {
+                    const relayUrl = new URL(baseUrl);
+                    if (relayUrl.protocol !== 'https:') {
+                        showCloudStatus('error', 'Worker 同步地址必须使用 HTTPS');
+                        return null;
+                    }
+                    relayUrl.search = '';
+                    relayUrl.hash = '';
+                    let relayPath = relayUrl.pathname.replace(/\/+$/, '');
+                    if (!relayPath.endsWith('/api/config')) relayPath += '/api/config';
+                    relayUrl.pathname = relayPath;
+                    return relayUrl.toString();
+                } catch {
+                    showCloudStatus('error', 'Worker 同步地址格式不正确');
+                    return null;
                 }
-            } else if (preset === 'nextcloud') {
+            }
+
+            if (!baseUrl.endsWith('/')) baseUrl += '/';
+            const encodedFilename = filename
+                .split('/')
+                .filter(Boolean)
+                .map(part => encodeURIComponent(part))
+                .join('/');
+
+            if (preset === 'nextcloud') {
                 if (!baseUrl.includes('/files/')) {
                     const username = document.getElementById('cloud-username').value.trim();
-                    baseUrl += `files/${username || 'USERNAME'}/${filename}`;
+                    baseUrl += `files/${encodeURIComponent(username || 'USERNAME')}/${encodedFilename}`;
                 } else {
-                    if (!baseUrl.endsWith(filename)) {
-                        baseUrl = baseUrl.replace(/\/$/, '') + '/' + filename;
+                    if (!baseUrl.endsWith('/' + encodedFilename)) {
+                        baseUrl = baseUrl.replace(/\/$/, '') + '/' + encodedFilename;
                     }
                 }
             } else {
-                baseUrl += filename;
-            }
-
-            const corsProxyEnabled = document.getElementById('cors-proxy-enabled').checked;
-            const corsProxyUrl = document.getElementById('cors-proxy-url').value.trim();
-            if (corsProxyEnabled && corsProxyUrl) {
-                const proxyBase = corsProxyUrl.endsWith('/') ? corsProxyUrl : corsProxyUrl + '/';
-                baseUrl = proxyBase + baseUrl;
+                baseUrl += encodedFilename;
             }
 
             return baseUrl;
+        }
+
+        function base64Utf8(value) {
+            const bytes = new TextEncoder().encode(value);
+            let binary = '';
+            bytes.forEach(byte => { binary += String.fromCharCode(byte); });
+            return btoa(binary);
         }
 
         function buildCloudHeaders() {
@@ -2188,7 +1861,7 @@
                     showCloudStatus('error', '请填写用户名和密码');
                     return null;
                 }
-                headers['Authorization'] = 'Basic ' + btoa(username + ':' + password);
+                headers['Authorization'] = 'Basic ' + base64Utf8(username + ':' + password);
             } else {
                 const token = document.getElementById('cloud-token').value.trim();
                 if (!token) {
@@ -2211,6 +1884,14 @@
         function hideCloudStatus() {
             const status = document.getElementById('cloud-status');
             status.style.display = 'none';
+        }
+
+        function getCloudConnectionHelp() {
+            const preset = document.querySelector('.cloud-preset-btn.active')?.id?.replace('preset-', '') || '';
+            if (preset === 'jianguoyun') {
+                return '\n\n请检查：\n1. Worker 地址是否正确并以 /api/config 结尾\n2. 同步令牌是否与 SYNC_TOKEN 一致\n3. Worker 的 ALLOWED_ORIGINS 是否包含当前页面 Origin';
+            }
+            return '\n\n请检查 WebDAV 地址和网络，并确认服务端 CORS 允许当前页面 Origin、Authorization、GET 与 PUT。';
         }
 
         function generateAccountsJSON() {
@@ -2259,7 +1940,7 @@
             const headers = buildCloudHeaders();
 
             if (!url) {
-                showCloudStatus('error', '请填写 WebDAV 地址');
+                showCloudStatus('error', '请填写同步地址');
                 return;
             }
             if (!headers) return;
@@ -2319,17 +2000,7 @@
                 }
             } catch (e) {
                 if (e.name === 'TypeError' && e.message.includes('Failed to fetch')) {
-                    const isChrome = /Chrome\//.test(navigator.userAgent) && !/Edg\//.test(navigator.userAgent);
-                    const protocol = window.location.protocol;
-                    let tips = '';
-                    if (protocol === 'file:' && isChrome) {
-                        tips = '\n\n💡 Chrome 不允许 file:// 向 HTTPS 发送请求，请：\n1. 启用「CORS 代理」\n2. 用 Firefox 打开本文件\n3. 检查地址和网络是否正常';
-                    } else if (protocol === 'file:') {
-                        tips = '\n\n💡 请检查：\n1. WebDAV 地址是否正确可达\n2. 网络连接是否正常\n3. HTTPS 证书是否有效';
-                    } else {
-                        tips = '\n\n💡 解决方案（按推荐顺序）：\n1. 启用「CORS 代理」（最快捷）\n2. 下载本页面后用 Firefox 打开\n3. 群晖/NextCloud 在服务端配置 CORS 头\n4. 坚果云不支持自定义 CORS，请用方案 1 或 2';
-                    }
-                    showCloudStatus('error', '❌ 连接失败：可能是 CORS 跨域限制或地址不可达' + tips);
+                    showCloudStatus('error', '❌ 连接失败：浏览器无法访问同步服务' + getCloudConnectionHelp());
                 } else {
                     showCloudStatus('error', `❌ 保存失败：${e.message}`);
                 }
@@ -2341,7 +2012,7 @@
             const headers = buildCloudHeaders();
 
             if (!url) {
-                showCloudStatus('error', '请填写 WebDAV 地址');
+                showCloudStatus('error', '请填写同步地址');
                 return;
             }
             if (!headers) return;
@@ -2388,14 +2059,7 @@
                 if (e instanceof SyntaxError) {
                     showCloudStatus('error', '❌ 配置文件不是有效的 JSON 格式');
                 } else if (e.name === 'TypeError' && e.message.includes('Failed to fetch')) {
-                    const protocol = window.location.protocol;
-                    let tips = '';
-                    if (protocol !== 'file:') {
-                        tips = '\n\n💡 解决方案：\n1. 下载本页面到本地打开（绕过 CORS）\n2. 启用「CORS 代理」\n3. 在服务端配置 CORS 允许头';
-                    } else {
-                        tips = '\n\n💡 请检查 WebDAV 地址和网络连接';
-                    }
-                    showCloudStatus('error', '❌ 网络请求失败：可能是 CORS 跨域限制或地址不可达' + tips);
+                    showCloudStatus('error', '❌ 网络请求失败：浏览器无法访问同步服务' + getCloudConnectionHelp());
                 } else {
                     showCloudStatus('error', `❌ 加载失败：${e.message}`);
                 }
@@ -2403,23 +2067,14 @@
         }
 
         async function testCloudConnection() {
-            let url = document.getElementById('cloud-url').value.trim();
+            const url = buildCloudUrl();
             const headers = buildCloudHeaders();
 
             if (!url) {
-                showCloudStatus('error', '请填写 WebDAV 地址');
+                showCloudStatus('error', '请填写同步地址');
                 return;
             }
             if (!headers) return;
-
-            if (!url.endsWith('/')) url += '/';
-
-            const corsProxyEnabled = document.getElementById('cors-proxy-enabled').checked;
-            const corsProxyUrl = document.getElementById('cors-proxy-url').value.trim();
-            if (corsProxyEnabled && corsProxyUrl) {
-                const proxyBase = corsProxyUrl.endsWith('/') ? corsProxyUrl : corsProxyUrl + '/';
-                url = proxyBase + url;
-            }
 
             showCloudStatus('info', '正在测试连接...');
 
@@ -2428,32 +2083,25 @@
                 delete testHeaders['Content-Type'];
 
                 const resp = await fetch(url, {
-                    method: 'PROPFIND',
-                    headers: {
-                        ...testHeaders,
-                        'Depth': '0'
-                    }
+                    method: 'GET',
+                    headers: testHeaders,
+                    cache: 'no-store'
                 });
 
-                if (resp.ok || resp.status === 207) {
-                    showCloudStatus('success', '✅ 连接成功！WebDAV 服务可正常访问');
+                if (resp.ok) {
+                    showCloudStatus('success', '✅ 连接成功！已找到云端配置文件');
                 } else if (resp.status === 401) {
-                    showCloudStatus('error', '❌ 连接失败：认证错误（用户名/密码不正确）');
+                    showCloudStatus('error', '❌ 连接失败：认证信息或同步令牌不正确');
                 } else if (resp.status === 404) {
-                    showCloudStatus('success', '⚠️ 地址可达但路径不存在（首次保存时会自动创建文件）');
+                    showCloudStatus('success', '✅ 连接成功！尚未创建配置文件，首次保存后即可加载');
+                } else if (resp.status === 403) {
+                    showCloudStatus('error', '❌ 连接失败：当前页面 Origin 未被同步服务允许');
                 } else {
                     showCloudStatus('error', `❌ 连接测试返回 HTTP ${resp.status}`);
                 }
             } catch (e) {
                 if (e.name === 'TypeError' && e.message.includes('Failed to fetch')) {
-                    const protocol = window.location.protocol;
-                    let tips = '';
-                    if (protocol !== 'file:') {
-                        tips = '\n\n💡 解决方案：\n1. 下载本页面到本地打开（绕过 CORS）\n2. 启用「CORS 代理」\n3. 在服务端配置 CORS 允许头';
-                    } else {
-                        tips = '\n\n💡 请检查地址和网络连接';
-                    }
-                    showCloudStatus('error', '❌ 连接失败：可能是 CORS 跨域限制或地址不可达' + tips);
+                    showCloudStatus('error', '❌ 连接失败：浏览器无法访问同步服务' + getCloudConnectionHelp());
                 } else {
                     showCloudStatus('error', `❌ 连接测试失败：${e.message}`);
                 }
@@ -2549,21 +2197,5 @@
             });
         });
     </script>
-<!-- CORS 代理选择弹窗 -->
-    <div class="cors-modal-overlay hidden" id="cors-modal-overlay" onclick="closeCorsProxyPickerOutside(event)">
-        <div class="cors-modal" id="cors-modal">
-            <div class="cors-modal-header">
-                <h3>🌐 选择 CORS 代理</h3>
-                <button class="cors-modal-close" onclick="closeCorsProxyPicker()">✕</button>
-            </div>
-            <div class="cors-modal-search">
-                <input type="text" id="cors-modal-search" placeholder="搜索代理…" oninput="filterCorsProxies(this.value)" autocomplete="off">
-            </div>
-            <div class="cors-modal-body" id="cors-modal-body">
-                <!-- 由 JS 渲染 -->
-            </div>
-        </div>
-    </div>
-
 </body>
 </html>

@@ -1,0 +1,15 @@
+name = "newapi-checkin-config-relay"
+main = "src/index.mjs"
+compatibility_date = "2026-07-11"
+workers_dev = true
+
+# Exact, comma-separated browser origins. There is no wildcard matching.
+# Add the literal value "null" only if local file:// pages must be allowed.
+[vars]
+ALLOWED_ORIGINS = "https://your-pages.example, null"
+JIANGUO_CONFIG_PATH = "/dav/newapi-config.json"
+
+# Configure these as Worker secrets; never put their values in this file:
+#   npx wrangler secret put JIANGUO_USERNAME
+#   npx wrangler secret put JIANGUO_APP_PASSWORD
+#   npx wrangler secret put SYNC_TOKEN

@@ -13,6 +13,7 @@
 - ✅ 支持手动触发和定时任务
 - ✅ **钉钉通知**（签到完成后自动推送结果）
 - ✅ **工作流保活**（防止 GitHub Actions 自动禁用）
+- ✅ **坚果云跨设备同步**（通过自托管 Cloudflare Worker 安全读写配置）
 
 ## 🛠️ 配置工具（推荐）
 
@@ -47,6 +48,18 @@ https://你的用户名.github.io/Newapi-checkin/config_generator.html
 - 📋 一键复制到剪贴板
 - 🌐 可在线访问，无需安装任何软件
 - 💾 **支持本地存储**，下次打开自动加载配置
+
+### ☁️ 坚果云跨设备同步（可选）
+
+坚果云 WebDAV 不允许浏览器跨域访问，在线页面、`file://` 和 Firefox 都不能直接绕过。项目提供了一个固定上游、带令牌鉴权的私有 Cloudflare Worker 中继；不再使用会接触应用密码的公共 CORS 代理。
+
+1. 按照 [worker/README.md](worker/README.md) 在 Cloudflare Workers 部署中继。
+2. 在 Worker 中配置 Secrets：`JIANGUO_USERNAME`、`JIANGUO_APP_PASSWORD`、`SYNC_TOKEN`。
+3. 将 `ALLOWED_ORIGINS` 设置为你的 GitHub Pages 或自定义域名 Origin，例如 `https://你的用户名.github.io`。
+4. 在网页生成器的“云端同步”中选择“坚果云”，填写 `https://你的-worker.workers.dev/api/config` 和 `SYNC_TOKEN`。
+5. 保存成功后，把页面生成的 `CONFIG_URL`、`CONFIG_AUTH` 添加到 GitHub Actions Secrets。
+
+之后任意设备只需填写同一个 Worker 地址和同步令牌，即可读取或更新同一份配置。坚果云邮箱和应用密码只保存在你自己的 Worker Secrets 中。
 
 ### 💻 方式 2：命令行配置助手
 
