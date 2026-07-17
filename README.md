@@ -22,7 +22,7 @@
 项目首页即为翻牌记录仪表盘：
 
 ```text
-https://newapicheckin.mornye.uk/
+https://shirahatobisa.github.io/Newapi-checkin/
 ```
 
 右上角设置按钮进入账号配置生成器。仪表盘只读取 Worker 返回的脱敏历史数据，不包含账号 Cookie、用户 ID 或同步令牌。
