@@ -168,13 +168,24 @@
   }
 
   function nextCronWindow(now = new Date()) {
-    const checkInterval = 5 * 60 * 1000;
-    return new Date((Math.floor(now.getTime() / checkInterval) + 1) * checkInterval);
+    const hours = [5, 11, 17, 23];
+    for (let dayOffset = 0; dayOffset < 3; dayOffset += 1) {
+      for (const hour of hours) {
+        const candidate = new Date(Date.UTC(
+          now.getUTCFullYear(),
+          now.getUTCMonth(),
+          now.getUTCDate() + dayOffset,
+          hour,
+          5,
+        ));
+        if (candidate > now) return candidate;
+      }
+    }
+    return new Date(now.getTime() + 6 * 60 * 60 * 1000);
   }
 
   function nextCheckAt(value) {
-    const checkInterval = 5 * 60 * 1000;
-    return new Date(Math.ceil(value.getTime() / checkInterval) * checkInterval);
+    return nextCronWindow(value);
   }
 
   function nextScheduledRun(latest, now = new Date()) {
@@ -186,7 +197,8 @@
 
   function renderSchedule(runs) {
     const latest = runs[0];
-    const nextRun = nextScheduledRun(latest);
+    const latestGwent = runs.find((run) => (run.source || "gwent") === "gwent");
+    const nextRun = nextScheduledRun(latestGwent);
     setText("next-run", nextRun ? formatDateTime(nextRun.toISOString()) : "--");
     if (!latest) {
       setText("last-run", "--");

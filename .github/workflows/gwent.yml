@@ -1,13 +1,13 @@
 name: 维云自动翻牌
 
 on:
-  # 每 5 分钟唤醒一次；只有满足 6 小时 5 分钟保护间隔才真正翻牌。
+  # 北京时间 01:05、07:05、13:05、19:05；Worker 租约继续保护真实间隔。
   schedule:
-    - cron: '*/5 * * * *'
+    - cron: '5 5,11,17,23 * * *'
   workflow_dispatch:
 
 concurrency:
-  group: gwent-${{ github.ref }}
+  group: vsllm-tasks-${{ github.repository }}
   cancel-in-progress: false
 
 jobs:

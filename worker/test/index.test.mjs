@@ -387,6 +387,28 @@ test("history POST aggregates events and is idempotent per run", async () => {
   assert.equal(stored.daily[0].date, "2026-07-17");
 });
 
+test("history accepts task sources without changing draw aggregation", async () => {
+  const kv = mockHistoryKv();
+  const env = { ...defaultEnv, CONFIG_KV: kv, ACTIONS_TOKEN: "actions-secret" };
+  const payload = historyPayload();
+  payload.run.run_id = "quiz:12345:1";
+  payload.run.source = "quiz";
+  payload.events = [payload.events[0]];
+  payload.events[0].event_id = "quiz:12345:1:abcdef1234567890:1";
+  payload.events[0].task_type = "quiz";
+
+  const response = await handleRequest(
+    historyRequest("POST", { body: JSON.stringify(payload) }),
+    env,
+  );
+  assert.equal(response.status, 200);
+
+  const stored = JSON.parse(kv.value("gwent-history-v1.json"));
+  assert.equal(stored.runs[0].source, "quiz");
+  assert.equal(stored.events[0].task_type, "quiz");
+  assert.equal(stored.totals.total_draws, 1);
+});
+
 test("history POST requires the Actions token and rejects sensitive fields", async () => {
   const env = { ...defaultEnv, CONFIG_KV: mockHistoryKv(), ACTIONS_TOKEN: "actions-secret" };
   const unauthorized = await handleRequest(

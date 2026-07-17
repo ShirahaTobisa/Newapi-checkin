@@ -5,8 +5,8 @@ import test from "node:test";
 const workflow = fs.readFileSync(new URL("../.github/workflows/gwent.yml", import.meta.url), "utf8");
 const script = fs.readFileSync(new URL("../checkin.py", import.meta.url), "utf8");
 
-test("Gwent workflow wakes frequently and enables interval protection", () => {
-  assert.match(workflow, /cron:\s*['"]\*\/5 \* \* \* \*['"]/u);
+test("Gwent workflow uses fixed 6-hour-5-minute windows and interval protection", () => {
+  assert.match(workflow, /cron:\s*['"]5 5,11,17,23 \* \* \*['"]/u);
   assert.match(workflow, /schedule_guard:/u);
   assert.match(workflow, /api\/gwent\/schedule/u);
   assert.match(workflow, /\{action:"claim"/u);
@@ -21,6 +21,7 @@ test("Gwent workflow wakes frequently and enables interval protection", () => {
   assert.match(workflow, /GWENT_SCHEDULE_GUARD:\s*['"]true['"]/u);
   assert.match(workflow, /GWENT_MIN_INTERVAL_SECONDS:\s*['"]21900['"]/u);
   assert.match(workflow, /GWENT_FORCE:/u);
+  assert.match(workflow, /group:\s*vsllm-tasks-\$\{\{ github\.repository \}\}/u);
   assert.match(workflow, /if:\s*always\(\)/u);
   assert.match(workflow, /continue-on-error:\s*true/u);
   assert.match(workflow, /SCHEDULE_LEASE_TOKEN:\s*\$\{\{\s*needs\.schedule_guard\.outputs\.lease_token\s*\}\}/u);

@@ -957,6 +957,7 @@ def run_gwent_tasks(accounts: list, draw_count: int) -> bool:
             'finished_at': finished_at,
             'planned_draws': draw_count,
             'status': run_status,
+            'source': 'gwent',
         },
         'events': history_events,
     })

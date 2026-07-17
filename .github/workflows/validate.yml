@@ -17,3 +17,10 @@ jobs:
           node-version: "20"
       - name: Run browser generator and Worker tests
         run: node --test tests/*.test.mjs worker/test/*.test.mjs
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+      - name: Run Python tests
+        run: python -m unittest -v test_checkin tests.test_gwent tests.test_vsllm_tasks

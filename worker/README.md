@@ -1,6 +1,6 @@
 # Cloudflare Worker 配置中继
 
-这个模块提供账号配置同步、脱敏翻牌历史和翻牌调度租约三组接口。浏览器对 `GET /api/config` 和 `PUT /api/config` 的请求会写入 Cloudflare KV；未绑定 KV 时回退到固定的坚果云 WebDAV 文件：
+这个模块提供账号配置同步、脱敏翻牌历史和翻牌调度租约三组接口。答题和广告任务在 GitHub Actions 中运行，Worker 只负责配置、历史和租约，不直接保存额外的 Cookie Secret。浏览器对 `GET /api/config` 和 `PUT /api/config` 的请求会写入 Cloudflare KV；未绑定 KV 时回退到固定的坚果云 WebDAV 文件：
 
 `https://dav.jianguoyun.com/dav/newapi-config.json`
 
@@ -11,6 +11,7 @@
 - 配置 `GET` 接受 `SYNC_TOKEN` 或 `ACTIONS_TOKEN`，配置 `PUT` 只接受 `SYNC_TOKEN`。
 - `GET /api/gwent/history` 公开返回脱敏汇总；`POST /api/gwent/history` 只接受 `ACTIONS_TOKEN`，并拒绝 Cookie、Session、Token、密码等敏感字段。
 - `POST /api/gwent/schedule` 只接受 `ACTIONS_TOKEN`，以 KV 保存 6 小时 5 分钟调度间隔和短期租约；租约请求失败时 Actions 会安全跳过本轮。
+- 历史运行的 `source` 可为 `gwent`、`quiz` 或 `ad`；旧记录没有该字段时按 `gwent` 兼容处理。
 - `ALLOWED_ORIGINS` 是逗号或换行分隔的精确白名单，不支持通配符、子域推断或前缀匹配。
 - 本地 `file://` 页面通常发送 `Origin: null`。只有在白名单中明确加入字面值 `null` 才会放行。
 - 无 `Origin` 的非浏览器请求仍可使用，但同样必须通过 Bearer 鉴权。
@@ -103,7 +104,7 @@ const history = await response.json();
 
 ## 翻牌调度租约
 
-GitHub Actions 每 5 分钟唤醒一次，先向私有接口申请租约：
+GitHub Actions 在北京时间 01:05、07:05、13:05、19:05 触发，先向私有接口申请租约：
 
 ```json
 POST /api/gwent/schedule

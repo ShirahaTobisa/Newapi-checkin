@@ -11,6 +11,7 @@ const MAX_HISTORY_EVENTS = 500;
 const MAX_HISTORY_RUNS = 120;
 const MAX_HISTORY_DAYS = 90;
 const MAX_EVENTS_PER_RUN = 100;
+const HISTORY_SOURCES = new Set(["gwent", "quiz", "ad"]);
 const DEFAULT_GWENT_INTERVAL_SECONDS = 21_900;
 const MAX_GWENT_INTERVAL_SECONDS = 7 * 24 * 60 * 60;
 const GWENT_LEASE_SECONDS = 15 * 60;
@@ -795,6 +796,10 @@ function normalizeHistoryPayload(payload) {
   const runStatuses = new Set(["success", "partial", "error"]);
   const eventStatuses = new Set(["success", "cooldown", "auth", "error"]);
   const rarities = new Set(["common", "rare", "epic", "legendary", "unknown"]);
+  const source = optionalHistoryString(payload.run.source, "run.source", 16) || "gwent";
+  if (!HISTORY_SOURCES.has(source)) {
+    throw new HttpError(400, "invalid_history", "run.source is invalid.");
+  }
   const run = {
     run_id: requiredHistoryString(payload.run.run_id, "run.run_id", 96, /^[A-Za-z0-9:_-]+$/u),
     run_number: historyInteger(payload.run.run_number, "run.run_number"),
@@ -803,6 +808,7 @@ function normalizeHistoryPayload(payload) {
     finished_at: historyTimestamp(payload.run.finished_at, "run.finished_at"),
     planned_draws: historyInteger(payload.run.planned_draws, "run.planned_draws", 20),
     status: requiredHistoryString(payload.run.status, "run.status", 16),
+    source,
   };
   if (!runStatuses.has(run.status)) {
     throw new HttpError(400, "invalid_history", "run.status is invalid.");
@@ -842,8 +848,13 @@ function normalizeHistoryPayload(payload) {
         1000,
       ),
       message: optionalHistoryString(event.message, `events[${index}].message`, 240),
+      task_type: optionalHistoryString(event.task_type, `events[${index}].task_type`, 16) || source,
     };
-    if (!eventStatuses.has(normalized.status) || !rarities.has(normalized.prize_rarity)) {
+    if (
+      !eventStatuses.has(normalized.status) ||
+      !rarities.has(normalized.prize_rarity) ||
+      !HISTORY_SOURCES.has(normalized.task_type)
+    ) {
       throw new HttpError(400, "invalid_history", `events[${index}] has an invalid enum value.`);
     }
     return normalized;
