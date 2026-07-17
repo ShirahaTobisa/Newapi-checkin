@@ -22,6 +22,9 @@ test("dashboard provides responsive, loading, empty, error, and stale states", (
   assert.match(css, /\.is-loading/u);
   assert.match(html, /id="events-empty"/u);
   assert.match(html, /id="error-banner"/u);
+  assert.match(html, /每 5 分钟检查/u);
+  assert.match(html, /6 小时 05 分/u);
+  assert.match(script, /MIN_DRAW_INTERVAL_MS/u);
   assert.match(script, /status-stale/u);
 });
 

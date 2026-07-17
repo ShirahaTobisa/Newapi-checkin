@@ -3,6 +3,7 @@
 
   const API_URL = "https://newapi-sync.mornye.uk/api/gwent/history";
   const MAX_VISIBLE_EVENTS = 100;
+  const MIN_DRAW_INTERVAL_MS = (6 * 60 + 5) * 60 * 1000;
   const numberFormat = new Intl.NumberFormat("zh-CN");
   const compactFormat = new Intl.NumberFormat("zh-CN", {
     notation: "compact",
@@ -166,27 +167,27 @@
     tbody.append(fragment);
   }
 
-  function nextScheduledRun(now = new Date()) {
-    const parts = Object.fromEntries(
-      new Intl.DateTimeFormat("en-US", {
-        timeZone: "Asia/Shanghai",
-        year: "numeric",
-        month: "numeric",
-        day: "numeric",
-      }).formatToParts(now).filter((part) => part.type !== "literal").map((part) => [part.type, Number(part.value)]),
-    );
-    const candidates = [];
-    for (let dayOffset = 0; dayOffset < 3; dayOffset += 1) {
-      for (const hour of [1, 7, 13, 19]) {
-        candidates.push(new Date(Date.UTC(parts.year, parts.month - 1, parts.day + dayOffset, hour - 8)));
-      }
-    }
-    return candidates.find((candidate) => candidate > now) || candidates[candidates.length - 1];
+  function nextCronWindow(now = new Date()) {
+    const checkInterval = 5 * 60 * 1000;
+    return new Date((Math.floor(now.getTime() / checkInterval) + 1) * checkInterval);
+  }
+
+  function nextCheckAt(value) {
+    const checkInterval = 5 * 60 * 1000;
+    return new Date(Math.ceil(value.getTime() / checkInterval) * checkInterval);
+  }
+
+  function nextScheduledRun(latest, now = new Date()) {
+    const finishedAt = latest && Date.parse(latest.finished_at);
+    if (!Number.isFinite(finishedAt)) return nextCronWindow(now);
+    const eligible = new Date(finishedAt + MIN_DRAW_INTERVAL_MS);
+    return eligible > now ? nextCheckAt(eligible) : nextCronWindow(now);
   }
 
   function renderSchedule(runs) {
     const latest = runs[0];
-    setText("next-run", formatDateTime(nextScheduledRun().toISOString()));
+    const nextRun = nextScheduledRun(latest);
+    setText("next-run", nextRun ? formatDateTime(nextRun.toISOString()) : "--");
     if (!latest) {
       setText("last-run", "--");
       setText("last-run-draws", "--");

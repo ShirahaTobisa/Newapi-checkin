@@ -1,9 +1,9 @@
 name: 维云自动翻牌
 
 on:
-  # 每 6 小时执行一次：北京时间 01:00、07:00、13:00、19:00
+  # 每 5 分钟唤醒一次；只有满足 6 小时 5 分钟保护间隔才真正翻牌。
   schedule:
-    - cron: '0 5,11,17,23 * * *'
+    - cron: '*/5 * * * *'
   workflow_dispatch:
 
 concurrency:
@@ -11,7 +11,82 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  schedule_guard:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      due: ${{ steps.claim.outputs.due }}
+      lease_token: ${{ steps.claim.outputs.lease_token }}
+    steps:
+      - name: 申请翻牌调度租约
+        id: claim
+        shell: bash
+        env:
+          SCHEDULE_URL: https://newapi-sync.mornye.uk/api/gwent/schedule
+          ACTIONS_TOKEN: ${{ secrets.ACTIONS_TOKEN || secrets.CONFIG_AUTH }}
+          MIN_INTERVAL_SECONDS: '21900'
+          FORCE: ${{ github.event_name == 'workflow_dispatch' }}
+        run: |
+          set -u
+          # Default to a closed gate. The worker owns the durable cooldown and
+          # lease state; a missing token, transport error, or malformed response
+          # must never start a real draw run.
+          echo "due=false" >> "$GITHUB_OUTPUT"
+          echo "lease_token=" >> "$GITHUB_OUTPUT"
+
+          if [[ -z "${ACTIONS_TOKEN:-}" ]]; then
+            echo "::warning::未配置 ACTIONS_TOKEN，本轮跳过翻牌"
+            exit 0
+          fi
+          actions_token="${ACTIONS_TOKEN#token:}"
+          if [[ -z "$actions_token" ]]; then
+            echo "::warning::ACTIONS_TOKEN 为空，本轮跳过翻牌"
+            exit 0
+          fi
+
+          lease_token="${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT}"
+          payload="$(jq -cn \
+            --arg lease "$lease_token" \
+            --argjson min_interval "${MIN_INTERVAL_SECONDS}" \
+            --argjson force "${FORCE:-false}" \
+            '{action:"claim", lease_token:$lease, min_interval_seconds:$min_interval, force:$force}')"
+
+          response_file="$(mktemp)"
+          error_file="$(mktemp)"
+          trap 'rm -f "$response_file" "$error_file"' EXIT
+          http_code="$(curl --silent --show-error --max-time 15 \
+            -o "$response_file" -w '%{http_code}' \
+            -H 'Content-Type: application/json' \
+            -H "Authorization: Bearer ${actions_token}" \
+            --data "$payload" "$SCHEDULE_URL" 2>"$error_file" || true)"
+
+          if [[ ! "$http_code" =~ ^2[0-9][0-9]$ ]]; then
+            detail="$(tr '\n' ' ' < "$error_file" | cut -c1-200)"
+            echo "::warning::调度租约接口请求失败（HTTP ${http_code:-network}），本轮等待下一次检查${detail:+：$detail}"
+            exit 0
+          fi
+
+          if ! due="$(jq -er \
+            'if (.success == true and .due == true and ((.claimed == true) or (.reused == true))) then "true"
+             elif (.success == true and .due == false) then "false"
+             else error end' "$response_file" 2>/dev/null)"; then
+            echo "::warning::调度租约接口返回了无法验证的响应，本轮等待下一次检查"
+            exit 0
+          fi
+
+          if [[ "$due" == "true" ]]; then
+            echo "due=true" >> "$GITHUB_OUTPUT"
+            echo "lease_token=${lease_token}" >> "$GITHUB_OUTPUT"
+            echo "已获取翻牌调度租约，开始执行本轮任务"
+          else
+            retry_after="$(jq -r '.retry_after_seconds // empty | tostring' "$response_file" 2>/dev/null || true)"
+            echo "距下一次翻牌资格尚未达到保护间隔${retry_after:+，预计还需 ${retry_after} 秒}"
+          fi
+
   gwent:
+    needs: schedule_guard
+    if: needs.schedule_guard.outputs.due == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -50,8 +125,11 @@ jobs:
           CONFIG_AUTH: ${{ secrets.CONFIG_AUTH }}
           NEWAPI_ACCOUNTS: ${{ secrets.NEWAPI_ACCOUNTS }}
           HISTORY_URL: https://newapi-sync.mornye.uk/api/gwent/history
-          HISTORY_AUTH: ${{ secrets.CONFIG_AUTH }}
+          HISTORY_AUTH: ${{ secrets.ACTIONS_TOKEN || secrets.CONFIG_AUTH }}
           HISTORY_REQUIRED: 'true'
+          GWENT_SCHEDULE_GUARD: 'true'
+          GWENT_MIN_INTERVAL_SECONDS: '21900'
+          GWENT_FORCE: ${{ github.event_name == 'workflow_dispatch' }}
         run: |
           set +e
           python -u checkin.py 2>&1 | tee "$LOG_FILE"
@@ -79,12 +157,57 @@ jobs:
 
           exit "$GWENT_EXIT"
 
+      - name: 完成翻牌调度租约
+        id: schedule_complete
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          SCHEDULE_URL: https://newapi-sync.mornye.uk/api/gwent/schedule
+          ACTIONS_TOKEN: ${{ secrets.ACTIONS_TOKEN || secrets.CONFIG_AUTH }}
+          SCHEDULE_LEASE_TOKEN: ${{ needs.schedule_guard.outputs.lease_token }}
+        run: |
+          set -u
+          if [[ -z "${SCHEDULE_LEASE_TOKEN:-}" ]]; then
+            echo "::warning::没有可完成的翻牌调度租约"
+            exit 0
+          fi
+          if [[ -z "${ACTIONS_TOKEN:-}" ]]; then
+            echo "::warning::未配置 ACTIONS_TOKEN，无法完成翻牌调度租约；租约将自行过期"
+            exit 0
+          fi
+          actions_token="${ACTIONS_TOKEN#token:}"
+          if [[ -z "$actions_token" ]]; then
+            echo "::warning::ACTIONS_TOKEN 为空，无法完成翻牌调度租约；租约将自行过期"
+            exit 0
+          fi
+
+          payload="$(jq -cn \
+            --arg lease "$SCHEDULE_LEASE_TOKEN" \
+            '{action:"complete", lease_token:$lease}')"
+          response_file="$(mktemp)"
+          error_file="$(mktemp)"
+          trap 'rm -f "$response_file" "$error_file"' EXIT
+          http_code="$(curl --silent --show-error --max-time 15 \
+            -o "$response_file" -w '%{http_code}' \
+            -H 'Content-Type: application/json' \
+            -H "Authorization: Bearer ${actions_token}" \
+            --data "$payload" "$SCHEDULE_URL" 2>"$error_file" || true)"
+
+          if [[ ! "$http_code" =~ ^2[0-9][0-9]$ ]] || \
+             ! jq -e '.success == true and .completed == true' "$response_file" >/dev/null 2>&1; then
+            detail="$(tr '\n' ' ' < "$error_file" | cut -c1-200)"
+            echo "::warning::完成翻牌调度租约失败（HTTP ${http_code:-network}）${detail:+：$detail}"
+            exit 0
+          fi
+          echo "翻牌调度租约已完成，下一轮将从完成时间重新计算保护间隔"
+
       - name: 写入 Actions 摘要
         if: always()
         shell: bash
         run: |
           {
-            echo "## 维云每 6 小时翻牌记录"
+            echo "## 维云翻牌记录（间隔保护：6 小时 5 分钟）"
             echo
             echo "- 日期（北京时间）：${LOG_DATE}"
             echo "- 每个账号计划翻牌：3 次"

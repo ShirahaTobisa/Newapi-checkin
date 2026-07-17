@@ -1,14 +1,20 @@
 const CONFIG_API_PATH = "/api/config";
 const HISTORY_API_PATH = "/api/gwent/history";
+const SCHEDULE_API_PATH = "/api/gwent/schedule";
 const UPSTREAM_ORIGIN = "https://dav.jianguoyun.com";
 const DEFAULT_CONFIG_PATH = "/dav/newapi-config.json";
 const KV_CONFIG_KEY = "newapi-config.json";
 const KV_HISTORY_KEY = "gwent-history-v1.json";
+const KV_SCHEDULE_KEY = "gwent-schedule-v1.json";
 const MAX_BODY_BYTES = 256 * 1024;
 const MAX_HISTORY_EVENTS = 500;
 const MAX_HISTORY_RUNS = 120;
 const MAX_HISTORY_DAYS = 90;
 const MAX_EVENTS_PER_RUN = 100;
+const DEFAULT_GWENT_INTERVAL_SECONDS = 21_900;
+const MAX_GWENT_INTERVAL_SECONDS = 7 * 24 * 60 * 60;
+const GWENT_LEASE_SECONDS = 15 * 60;
+const MAX_SCHEDULE_TOKEN_LENGTH = 128;
 const SENSITIVE_HISTORY_FIELD = /(?:authorization|cf_clearance|cookie|password|session|token)/iu;
 
 class HttpError extends Error {
@@ -384,6 +390,328 @@ async function callKv(request, env) {
   return new Response(null, { status: 204, headers });
 }
 
+function emptySchedule() {
+  return {
+    schema_version: 1,
+    completed_at: null,
+    last_claimed_at: null,
+    last_completed_token: null,
+    lease: null,
+    updated_at: null,
+  };
+}
+
+function parseScheduleTimestamp(value, name, status = 500) {
+  if (
+    typeof value !== "string" ||
+    value.length === 0 ||
+    value.length > 40 ||
+    !Number.isFinite(Date.parse(value))
+  ) {
+    const code = status === 400 ? "invalid_schedule" : "schedule_corrupt";
+    throw new HttpError(status, code, `${name} is invalid.`);
+  }
+  return value;
+}
+
+function normalizeStoredSchedule(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value) || value.schema_version !== 1) {
+    throw new HttpError(500, "schedule_corrupt", "Stored schedule state is invalid.");
+  }
+
+  const completedAt =
+    value.completed_at === null || value.completed_at === undefined
+      ? null
+      : parseScheduleTimestamp(value.completed_at, "completed_at");
+  const lastClaimedAt =
+    value.last_claimed_at === null || value.last_claimed_at === undefined
+      ? null
+      : parseScheduleTimestamp(value.last_claimed_at, "last_claimed_at");
+  const lastCompletedToken =
+    value.last_completed_token === null || value.last_completed_token === undefined
+      ? null
+      : scheduleToken(value.last_completed_token, "last_completed_token", 500);
+  let lease = null;
+  if (value.lease !== null && value.lease !== undefined) {
+    if (!value.lease || typeof value.lease !== "object" || Array.isArray(value.lease)) {
+      throw new HttpError(500, "schedule_corrupt", "Stored schedule lease is invalid.");
+    }
+    const token = value.lease.token;
+    if (
+      typeof token !== "string" ||
+      token.length === 0 ||
+      token.length > MAX_SCHEDULE_TOKEN_LENGTH ||
+      !/^[A-Za-z0-9:_-]+$/u.test(token)
+    ) {
+      throw new HttpError(500, "schedule_corrupt", "Stored schedule lease token is invalid.");
+    }
+    lease = {
+      token,
+      claimed_at: parseScheduleTimestamp(value.lease.claimed_at, "lease.claimed_at"),
+      expires_at: parseScheduleTimestamp(value.lease.expires_at, "lease.expires_at"),
+    };
+  }
+
+  return {
+    schema_version: 1,
+    completed_at: completedAt,
+    last_claimed_at: lastClaimedAt || (lease === null ? null : lease.claimed_at),
+    last_completed_token: lastCompletedToken,
+    lease,
+    updated_at:
+      value.updated_at === null || value.updated_at === undefined
+        ? null
+        : parseScheduleTimestamp(value.updated_at, "updated_at"),
+  };
+}
+
+async function readSchedule(env) {
+  const value = await env.CONFIG_KV.get(KV_SCHEDULE_KEY);
+  if (value === null) {
+    return emptySchedule();
+  }
+
+  try {
+    return normalizeStoredSchedule(JSON.parse(value));
+  } catch (error) {
+    if (error instanceof HttpError) {
+      throw error;
+    }
+    throw new HttpError(500, "schedule_corrupt", "Stored schedule state is not valid JSON.");
+  }
+}
+
+async function writeSchedule(env, state) {
+  const serialized = JSON.stringify(state);
+  if (new TextEncoder().encode(serialized).byteLength > MAX_BODY_BYTES) {
+    throw new HttpError(500, "schedule_too_large", "Stored schedule state exceeds the size limit.");
+  }
+  await env.CONFIG_KV.put(KV_SCHEDULE_KEY, serialized);
+}
+
+function scheduleToken(value, name = "lease_token", status = 400) {
+  if (
+    typeof value !== "string" ||
+    value.length === 0 ||
+    value.length > MAX_SCHEDULE_TOKEN_LENGTH ||
+    !/^[A-Za-z0-9:_-]+$/u.test(value)
+  ) {
+    throw new HttpError(
+      status,
+      status === 400 ? "invalid_schedule" : "schedule_corrupt",
+      `${name} is invalid.`,
+    );
+  }
+  return value;
+}
+
+function normalizeSchedulePayload(payload) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    throw new HttpError(400, "invalid_schedule", "Schedule payload must be an object.");
+  }
+  if (payload.action !== "claim" && payload.action !== "complete") {
+    throw new HttpError(400, "invalid_schedule", "action must be claim or complete.");
+  }
+
+  const normalized = {
+    action: payload.action,
+    lease_token: scheduleToken(payload.lease_token),
+    min_interval_seconds: DEFAULT_GWENT_INTERVAL_SECONDS,
+    force: false,
+    completed_at: null,
+  };
+
+  if (payload.min_interval_seconds !== undefined) {
+    if (
+      !Number.isSafeInteger(payload.min_interval_seconds) ||
+      payload.min_interval_seconds < DEFAULT_GWENT_INTERVAL_SECONDS ||
+      payload.min_interval_seconds > MAX_GWENT_INTERVAL_SECONDS
+    ) {
+      throw new HttpError(
+        400,
+        "invalid_schedule",
+        `min_interval_seconds must be at least ${DEFAULT_GWENT_INTERVAL_SECONDS}.`,
+      );
+    }
+    normalized.min_interval_seconds = payload.min_interval_seconds;
+  }
+
+  if (payload.force !== undefined) {
+    if (typeof payload.force !== "boolean") {
+      throw new HttpError(400, "invalid_schedule", "force is invalid.");
+    }
+    normalized.force = payload.force;
+  }
+
+  if (payload.completed_at !== undefined && payload.completed_at !== null) {
+    normalized.completed_at = parseScheduleTimestamp(payload.completed_at, "completed_at", 400);
+  }
+
+  return normalized;
+}
+
+function secondsUntil(timestampMs, nowMs) {
+  return Math.max(1, Math.ceil((timestampMs - nowMs) / 1000));
+}
+
+async function handleSchedule(request, env, corsOrigin) {
+  if (!env.CONFIG_KV || typeof env.CONFIG_KV.get !== "function" || typeof env.CONFIG_KV.put !== "function") {
+    throw new HttpError(500, "worker_not_configured", "CONFIG_KV is not configured.");
+  }
+
+  const actionsToken = requiredSecret(env, "ACTIONS_TOKEN");
+  requireBearerToken(request, [actionsToken]);
+
+  const body = await readLimitedBody(request);
+  let payload;
+  try {
+    payload = JSON.parse(new TextDecoder().decode(body));
+  } catch {
+    throw new HttpError(400, "invalid_json", "Schedule payload must be valid JSON.");
+  }
+
+  const input = normalizeSchedulePayload(payload);
+  const nowMs = Date.now();
+  const now = new Date(nowMs).toISOString();
+  if (input.completed_at !== null && Date.parse(input.completed_at) > nowMs) {
+    throw new HttpError(400, "invalid_schedule", "completed_at cannot be in the future.");
+  }
+  const state = await readSchedule(env);
+
+  if (input.action === "claim") {
+    if (state.lease !== null) {
+      const leaseExpiresMs = Date.parse(state.lease.expires_at);
+      if (leaseExpiresMs > nowMs) {
+        if (constantTimeEqual(state.lease.token, input.lease_token)) {
+          // A retry after a lost response is safe to treat as the original claim.
+          return jsonResponse(
+            {
+              success: true,
+              due: true,
+              claimed: false,
+              reused: true,
+              completed_at: state.completed_at,
+              lease_expires_at: state.lease.expires_at,
+              lease_seconds: secondsUntil(leaseExpiresMs, nowMs),
+            },
+            200,
+            corsOrigin,
+          );
+        }
+        return jsonResponse(
+          {
+            success: true,
+            due: false,
+            claimed: false,
+            reason: "lease_active",
+            completed_at: state.completed_at,
+            lease_expires_at: state.lease.expires_at,
+            retry_after_seconds: secondsUntil(leaseExpiresMs, nowMs),
+          },
+          200,
+          corsOrigin,
+        );
+      }
+      // An expired lease cannot block a new scheduled run. It is replaced below.
+    }
+
+    const completedMs = state.completed_at === null ? null : Date.parse(state.completed_at);
+    const claimedMs = state.last_claimed_at === null ? null : Date.parse(state.last_claimed_at);
+    const gateMs = Math.max(completedMs ?? Number.NEGATIVE_INFINITY, claimedMs ?? Number.NEGATIVE_INFINITY);
+    if (
+      !input.force &&
+      Number.isFinite(gateMs) &&
+      nowMs < gateMs + input.min_interval_seconds * 1000
+    ) {
+      return jsonResponse(
+        {
+          success: true,
+          due: false,
+          claimed: false,
+          reason: "interval",
+          completed_at: state.completed_at,
+          lease_expires_at: null,
+          retry_after_seconds: secondsUntil(
+            gateMs + input.min_interval_seconds * 1000,
+            nowMs,
+          ),
+        },
+        200,
+        corsOrigin,
+      );
+    }
+
+    const leaseExpiresAt = new Date(nowMs + GWENT_LEASE_SECONDS * 1000).toISOString();
+    const nextState = {
+      schema_version: 1,
+      completed_at: state.completed_at,
+      last_claimed_at: now,
+      last_completed_token: state.last_completed_token,
+      lease: {
+        token: input.lease_token,
+        claimed_at: now,
+        expires_at: leaseExpiresAt,
+      },
+      updated_at: now,
+    };
+    await writeSchedule(env, nextState);
+    return jsonResponse(
+      {
+        success: true,
+        due: true,
+        claimed: true,
+        completed_at: nextState.completed_at,
+        lease_expires_at: leaseExpiresAt,
+        lease_seconds: GWENT_LEASE_SECONDS,
+      },
+      200,
+      corsOrigin,
+    );
+  }
+
+  if (state.lease === null) {
+    if (
+      state.last_completed_token !== null &&
+      constantTimeEqual(state.last_completed_token, input.lease_token)
+    ) {
+      return jsonResponse(
+        {
+          success: true,
+          completed: true,
+          idempotent: true,
+          completed_at: state.completed_at,
+        },
+        200,
+        corsOrigin,
+      );
+    }
+    throw new HttpError(409, "schedule_lease_missing", "No active schedule lease exists.");
+  }
+  if (!constantTimeEqual(state.lease.token, input.lease_token)) {
+    throw new HttpError(409, "schedule_lease_not_owned", "The schedule lease belongs to another run.");
+  }
+
+  const completedAt = input.completed_at || now;
+  const nextState = {
+    schema_version: 1,
+    completed_at: completedAt,
+    last_claimed_at: state.last_claimed_at,
+    last_completed_token: input.lease_token,
+    lease: null,
+    updated_at: now,
+  };
+  await writeSchedule(env, nextState);
+  return jsonResponse(
+    {
+      success: true,
+      completed: true,
+      completed_at: completedAt,
+    },
+    200,
+    corsOrigin,
+  );
+}
+
 function emptyHistory() {
   return {
     schema_version: 1,
@@ -669,7 +997,7 @@ export async function handleRequest(request, env = {}, upstreamFetch) {
 
   try {
     const url = new URL(request.url);
-    if (![CONFIG_API_PATH, HISTORY_API_PATH].includes(url.pathname)) {
+    if (![CONFIG_API_PATH, HISTORY_API_PATH, SCHEDULE_API_PATH].includes(url.pathname)) {
       throw new HttpError(404, "not_found", "Endpoint not found.");
     }
 
@@ -685,6 +1013,32 @@ export async function handleRequest(request, env = {}, upstreamFetch) {
         });
       }
       return await handleHistory(request, env, corsOrigin);
+    }
+
+    if (url.pathname === SCHEDULE_API_PATH) {
+      if (request.method === "OPTIONS") {
+        const requestedMethod = request.headers.get("Access-Control-Request-Method");
+        if (requestedMethod !== null && requestedMethod.toUpperCase() !== "POST") {
+          throw new HttpError(
+            405,
+            "method_not_allowed",
+            "Only POST may be preflighted.",
+            undefined,
+            { Allow: "POST, OPTIONS" },
+          );
+        }
+        return optionsResponse(corsOrigin, ["POST", "OPTIONS"]);
+      }
+      if (request.method !== "POST") {
+        throw new HttpError(
+          405,
+          "method_not_allowed",
+          "Only POST and OPTIONS are supported.",
+          undefined,
+          { Allow: "POST, OPTIONS" },
+        );
+      }
+      return await handleSchedule(request, env, corsOrigin);
     }
 
     if (request.method === "OPTIONS") {

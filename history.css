@@ -468,7 +468,7 @@ tbody tr:hover td { background: #f8f9fa; }
 .schedule-strip {
   margin-top: 11px;
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(2, 1fr);
   gap: 5px;
 }
 

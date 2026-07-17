@@ -10,11 +10,15 @@ import sys
 import json
 import base64
 import hashlib
+import math
 import time
 import requests
 from datetime import datetime, timezone
 from typing import Optional
 from urllib.parse import urlparse
+
+
+GWENT_MIN_INTERVAL_SECONDS = 6 * 60 * 60 + 5 * 60
 
 try:
     from cf_bypass import detect_cloudflare_block, CloudflareBypasser
@@ -96,6 +100,34 @@ class NewAPICheckin:
         message = data.get('message') if isinstance(data, dict) else None
         return str(message) if message else default
 
+    def gwent_status(self) -> dict:
+        """读取维云当前可用翻牌次数；状态接口失败时交给 draw 接口兜底。"""
+        if not self.is_vsllm():
+            return {'success': False, 'available': None}
+        try:
+            response = self.session.get(f'{self.base_url}/api/gwent/status', timeout=30)
+            data = response.json()
+        except (requests.exceptions.RequestException, json.JSONDecodeError, ValueError, TypeError):
+            return {'success': False, 'available': None}
+
+        if not (200 <= response.status_code < 300 and isinstance(data, dict) and data.get('success')):
+            return {'success': False, 'available': None}
+        payload = data.get('data') or {}
+        if not isinstance(payload, dict):
+            return {'success': False, 'available': None}
+        has_charge_fields = 'charges_current' in payload or 'extra_draws_left' in payload
+        charges_current = normalize_gwent_quota(payload.get('charges_current'))
+        extra_draws_left = normalize_gwent_quota(payload.get('extra_draws_left'))
+        return {
+            'success': True,
+            'available': charges_current + extra_draws_left if has_charge_fields else None,
+            'charges_current': charges_current,
+            'extra_draws_left': extra_draws_left,
+            'next_available_at': normalize_gwent_quota(payload.get('next_available_at')),
+            'next_charge_at': normalize_gwent_quota(payload.get('next_charge_at')),
+            'cooldown_seconds': normalize_gwent_quota(payload.get('cooldown_seconds')),
+        }
+
     def gwent_draw(self) -> dict:
         """为维云账号激活下一抽 50% 分享加成并翻牌。"""
         result = {
@@ -107,6 +139,9 @@ class NewAPICheckin:
             'prize_quota': None,
             'prize_rarity': None,
             'bonus_percent': None,
+            'available_after': None,
+            'charges_current': None,
+            'extra_draws_left': None,
         }
 
         if not self.is_vsllm():
@@ -159,16 +194,24 @@ class NewAPICheckin:
 
             payload = draw_data.get('data') or {}
             prize = payload.get('prize') or {}
+            charges_current = normalize_gwent_quota(payload.get('charges_current'))
+            extra_draws_left = normalize_gwent_quota(payload.get('extra_draws_left'))
+            has_charge_fields = 'charges_current' in payload or 'extra_draws_left' in payload
             result.update({
                 'success': True,
                 'message': draw_message,
                 'prize_name': prize.get('name'),
                 'prize_quota': prize.get('quota'),
                 'prize_rarity': prize.get('rarity'),
-                'bonus_percent': payload.get(
-                    'bonus_pct',
-                    payload.get('bonus_percent', payload.get('applied_bonus_percent', 50)),
+                'bonus_percent': normalize_gwent_bonus_percent(
+                    payload.get(
+                        'bonus_pct',
+                        payload.get('bonus_percent', payload.get('applied_bonus_percent', 50)),
+                    )
                 ),
+                'charges_current': charges_current if has_charge_fields else None,
+                'extra_draws_left': extra_draws_left if has_charge_fields else None,
+                'available_after': charges_current + extra_draws_left if has_charge_fields else None,
             })
         except requests.exceptions.Timeout:
             result['message'] = '翻牌请求超时'
@@ -181,12 +224,47 @@ class NewAPICheckin:
 
     def gwent_draw_many(self, count: int = 3) -> list:
         """连续翻牌；任意一次失败后停止，避免无效重复请求。"""
+        requested = max(1, count)
+        status = self.gwent_status()
+        available = status.get('available') if status.get('success') else None
         results = []
-        for _ in range(max(1, count)):
+
+        def cooldown_result(available_before=0):
+            return {
+                'success': False,
+                'unlock_success': False,
+                'message': '冷却中：当前没有可用翻牌次数',
+                'unlock_message': '',
+                'prize_quota': None,
+                'prize_rarity': 'unknown',
+                'bonus_percent': 0,
+                'available_before': available_before,
+                'synthetic_cooldown': True,
+            }
+
+        # Status is advisory; when it is unavailable, let the draw endpoint decide.
+        if available is not None and available <= 0:
+            return [cooldown_result()]
+
+        planned = min(requested, available) if available is not None else requested
+        for attempt in range(planned):
             result = self.gwent_draw()
+            if attempt == 0 and available is not None:
+                result['available_before'] = available
             results.append(result)
             if not result.get('success'):
                 break
+            remaining = result.get('available_after')
+            if remaining is not None and remaining <= 0 and attempt + 1 < requested:
+                results.append(cooldown_result())
+                break
+        if (
+            available is not None
+            and available < requested
+            and results
+            and results[-1].get('success')
+        ):
+            results.append(cooldown_result())
         return results
 
     def _extract_user_id_from_session(self, session_cookie: str) -> Optional[str]:
@@ -584,11 +662,117 @@ def history_account_key(account: dict, index: int) -> str:
     return hashlib.sha256(f'{host}:{identity}'.encode('utf-8')).hexdigest()[:16]
 
 
+def normalize_gwent_quota(value) -> int:
+    """把翻牌 API 的额度值规范成非负整数，兼容字符串数字。"""
+    if isinstance(value, bool) or value is None:
+        return 0
+    try:
+        number = float(str(value).replace(',', '').strip())
+    except (TypeError, ValueError):
+        return 0
+    if not math.isfinite(number) or number < 0:
+        return 0
+    return int(number)
+
+
+def normalize_gwent_bonus_percent(value) -> int:
+    """把 0.5 比例或 50 百分数统一成百分数整数。"""
+    if isinstance(value, bool) or value is None:
+        return 0
+    try:
+        number = float(str(value).replace(',', '').strip())
+    except (TypeError, ValueError):
+        return 0
+    if not math.isfinite(number) or number < 0:
+        return 0
+    if 0 < number <= 1:
+        number *= 100
+    return int(number)
+
+
+def parse_utc_timestamp(value):
+    """解析历史 API 的 ISO 时间戳，返回 UTC aware datetime。"""
+    if isinstance(value, datetime):
+        parsed = value
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    if not isinstance(value, str) or not value.strip():
+        return None
+    timestamp = value.strip()
+    if timestamp.endswith('Z'):
+        timestamp = f'{timestamp[:-1]}+00:00'
+    try:
+        parsed = datetime.fromisoformat(timestamp)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def load_gwent_last_success(history_url: str) -> dict:
+    """读取每个账号最近一次成功翻牌时间；失败时让调度保护安全停止。"""
+    if not history_url:
+        raise RuntimeError('未配置 HISTORY_URL')
+    try:
+        response = requests.get(
+            history_url,
+            headers={'Accept': 'application/json', 'Cache-Control': 'no-store'},
+            timeout=15,
+        )
+    except requests.exceptions.RequestException as error:
+        raise RuntimeError(f'历史接口请求失败（{type(error).__name__}）') from error
+    if response.status_code != 200:
+        raise RuntimeError(f'历史接口返回 HTTP {response.status_code}')
+    try:
+        data = response.json()
+    except (ValueError, TypeError) as error:
+        raise RuntimeError('历史接口返回格式错误') from error
+    if not isinstance(data, dict):
+        raise RuntimeError('历史接口返回格式错误')
+
+    latest = {}
+    for event in data.get('events') or []:
+        if not isinstance(event, dict) or event.get('status') != 'success':
+            continue
+        account_key = event.get('account_key')
+        occurred_at = parse_utc_timestamp(event.get('occurred_at'))
+        if not isinstance(account_key, str) or occurred_at is None:
+            continue
+        if occurred_at > latest.get(account_key, datetime.min.replace(tzinfo=timezone.utc)):
+            latest[account_key] = occurred_at
+    return latest
+
+
+def filter_gwent_targets(
+    targets: list,
+    last_success: dict,
+    min_interval_seconds: int = GWENT_MIN_INTERVAL_SECONDS,
+    now=None,
+):
+    """只保留距上次成功翻牌达到保护间隔的账号。"""
+    current = now or datetime.now(timezone.utc)
+    eligible = []
+    skipped = []
+    for target in targets:
+        index, account, _client = target
+        account_key = history_account_key(account, index)
+        last_success_at = parse_utc_timestamp(last_success.get(account_key))
+        if last_success_at is not None:
+            elapsed = (current - last_success_at).total_seconds()
+            if elapsed < min_interval_seconds:
+                skipped.append((target, max(1, math.ceil(min_interval_seconds - elapsed))))
+                continue
+        eligible.append(target)
+    return eligible, skipped
+
+
 def gwent_event_status(result: dict) -> str:
     if result.get('success'):
         return 'success'
     message = str(result.get('message', '')).lower()
-    if '冷却' in message:
+    if any(marker in message for marker in ('冷却', 'cooldown', 'too soon', 'next draw', 'no available', '次数不足')):
         return 'cooldown'
     if '认证' in message or 'session' in message or 'unauthorized' in message:
         return 'auth'
@@ -647,14 +831,42 @@ def run_gwent_tasks(accounts: list, draw_count: int) -> bool:
         if client.is_vsllm():
             targets.append((index, account, client))
 
-    print(f'共 {len(targets)} 个维云账号待翻牌，每个最多 {draw_count} 次\n')
     if not targets:
         print('[警告] 配置中没有 vsllm.com 账号，翻牌任务已跳过')
+        return True
+
+    schedule_guard_enabled = (
+        os.environ.get('GWENT_SCHEDULE_GUARD', '').strip().lower() == 'true'
+        and os.environ.get('GWENT_FORCE', '').strip().lower() != 'true'
+    )
+    if schedule_guard_enabled:
+        try:
+            last_success = load_gwent_last_success(os.environ.get('HISTORY_URL', '').strip())
+        except RuntimeError as error:
+            print(f'[调度] 无法确认上次翻牌时间，本轮停止：{error}')
+            return False
+        interval_raw = os.environ.get('GWENT_MIN_INTERVAL_SECONDS', '').strip()
+        try:
+            min_interval = max(0, int(interval_raw)) if interval_raw else GWENT_MIN_INTERVAL_SECONDS
+        except ValueError:
+            min_interval = GWENT_MIN_INTERVAL_SECONDS
+        targets, skipped = filter_gwent_targets(targets, last_success, min_interval)
+        for (_index, account, _client), remaining in skipped:
+            name = account.get('name') or '未命名账号'
+            minutes = max(1, math.ceil(remaining / 60))
+            print(f'[调度] {name} 距上次成功翻牌还需约 {minutes} 分钟，本轮跳过')
+    elif os.environ.get('GWENT_SCHEDULE_GUARD', '').strip().lower() == 'true':
+        print('[调度] 手动运行绕过 6 小时 5 分钟保护')
+
+    print(f'共 {len(targets)} 个维云账号待翻牌，每个最多 {draw_count} 次\n')
+    if not targets:
+        print('[调度] 本轮没有达到翻牌间隔的账号，任务已安全跳过')
         return True
 
     success_count = 0
     fail_count = 0
     error_count = 0
+    run_total_quota = 0
 
     for position, (index, account, client) in enumerate(targets, 1):
         name = account.get('name') or f'账号{index}'
@@ -676,6 +888,9 @@ def run_gwent_tasks(accounts: list, draw_count: int) -> bool:
         completed = 0
         total_quota = 0
         account_key = history_account_key(account, index)
+        available_before = results[0].get('available_before') if results else None
+        if available_before is not None:
+            print(f'  可用翻牌次数: {available_before}')
         for attempt, result in enumerate(results, 1):
             if result.get('unlock_success'):
                 print(f'  第 {attempt}/{draw_count} 次加成: ✅ {result["unlock_message"]}')
@@ -685,22 +900,18 @@ def run_gwent_tasks(accounts: list, draw_count: int) -> bool:
             if result.get('success'):
                 completed += 1
                 prize_name = result.get('prize_name') or '未知奖品'
-                prize_quota = result.get('prize_quota')
-                if isinstance(prize_quota, (int, float)):
-                    total_quota += prize_quota
-                    quota_text = f' (+{prize_quota:,} 额度)'
-                else:
-                    quota_text = ''
+                quota_value = normalize_gwent_quota(result.get('prize_quota'))
+                total_quota += quota_value
+                quota_text = f' (+{quota_value:,} 额度)'
                 print(f'  第 {attempt}/{draw_count} 次翻牌: ✅ {prize_name}{quota_text}')
             elif result.get('unlock_success'):
                 print(f'  第 {attempt}/{draw_count} 次翻牌: ❌ {result["message"]}')
 
-            prize_quota = result.get('prize_quota')
-            quota_value = int(prize_quota) if isinstance(prize_quota, (int, float)) else 0
+            quota_value = normalize_gwent_quota(result.get('prize_quota'))
             rarity = str(result.get('prize_rarity') or 'unknown').lower()
             if rarity not in ('common', 'rare', 'epic', 'legendary'):
                 rarity = 'unknown'
-            bonus_percent = result.get('bonus_percent')
+            bonus_percent = normalize_gwent_bonus_percent(result.get('bonus_percent'))
             history_events.append({
                 'event_id': f'{run_id}:{account_key}:{attempt}',
                 'account_key': account_key,
@@ -711,25 +922,28 @@ def run_gwent_tasks(accounts: list, draw_count: int) -> bool:
                 'prize_name': str(result.get('prize_name'))[:80] if result.get('prize_name') else None,
                 'prize_quota': max(0, quota_value),
                 'prize_rarity': rarity,
-                'bonus_percent': int(bonus_percent) if isinstance(bonus_percent, (int, float)) else 0,
+                'bonus_percent': bonus_percent,
                 'message': str(result.get('message', ''))[:240] or None,
             })
 
+        run_total_quota += total_quota
+        quota_summary = f'，本轮额度 +{total_quota:,}'
         if completed == draw_count:
             success_count += 1
-            print(f'  小结: ✅ 完成 {completed}/{draw_count} 次，合计 +{total_quota:,} 额度')
+            print(f'  小结: ✅ 完成 {completed}/{draw_count} 次{quota_summary}')
         else:
             fail_count += 1
-            last_message = results[-1].get('message', '') if results else ''
-            if '冷却' in last_message:
-                print(f'  小结: ⏳ 完成 {completed}/{draw_count} 次，剩余次数仍在冷却')
+            last_result = results[-1] if results else {}
+            if gwent_event_status(last_result) == 'cooldown':
+                print(f'  小结: ⏳ 完成 {completed}/{draw_count} 次，剩余次数仍在冷却{quota_summary}')
             else:
                 error_count += 1
-                print(f'  小结: ❌ 完成 {completed}/{draw_count} 次')
+                print(f'  小结: ❌ 完成 {completed}/{draw_count} 次{quota_summary}')
         print()
 
     print('=' * 50)
     print(f'翻牌完成: 全部完成 {success_count}, 未满 {fail_count}, 实际错误 {error_count}')
+    print(f'本轮所有账号额度: +{run_total_quota:,}')
     print('=' * 50)
     finished_at = utc_timestamp()
     run_status = 'success' if fail_count == 0 else ('error' if error_count == len(targets) else 'partial')

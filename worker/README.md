@@ -1,6 +1,6 @@
 # Cloudflare Worker 配置中继
 
-这个模块提供账号配置同步和脱敏翻牌历史两组接口。浏览器对 `GET /api/config` 和 `PUT /api/config` 的请求会写入 Cloudflare KV；未绑定 KV 时回退到固定的坚果云 WebDAV 文件：
+这个模块提供账号配置同步、脱敏翻牌历史和翻牌调度租约三组接口。浏览器对 `GET /api/config` 和 `PUT /api/config` 的请求会写入 Cloudflare KV；未绑定 KV 时回退到固定的坚果云 WebDAV 文件：
 
 `https://dav.jianguoyun.com/dav/newapi-config.json`
 
@@ -10,6 +10,7 @@
 
 - 配置 `GET` 接受 `SYNC_TOKEN` 或 `ACTIONS_TOKEN`，配置 `PUT` 只接受 `SYNC_TOKEN`。
 - `GET /api/gwent/history` 公开返回脱敏汇总；`POST /api/gwent/history` 只接受 `ACTIONS_TOKEN`，并拒绝 Cookie、Session、Token、密码等敏感字段。
+- `POST /api/gwent/schedule` 只接受 `ACTIONS_TOKEN`，以 KV 保存 6 小时 5 分钟调度间隔和短期租约；租约请求失败时 Actions 会安全跳过本轮。
 - `ALLOWED_ORIGINS` 是逗号或换行分隔的精确白名单，不支持通配符、子域推断或前缀匹配。
 - 本地 `file://` 页面通常发送 `Origin: null`。只有在白名单中明确加入字面值 `null` 才会放行。
 - 无 `Origin` 的非浏览器请求仍可使用，但同样必须通过 Bearer 鉴权。
@@ -27,7 +28,7 @@
 1. 在 Cloudflare 控制台进入 **Workers & Pages**，创建一个 Worker。
 2. 使用在线编辑器，以模块 Worker 的形式粘贴 `src/index.mjs` 的内容并部署。
 3. 绑定名为 `CONFIG_KV` 的 KV 命名空间，并添加普通变量 `ALLOWED_ORIGINS`。
-4. 以 **Secret** 类型添加 `SYNC_TOKEN`，然后重新部署。可选的 `ACTIONS_TOKEN` 可为 GitHub Actions 使用独立令牌。仅在不使用 KV、回退坚果云 WebDAV 时才需要 `JIANGUO_USERNAME`、`JIANGUO_APP_PASSWORD` 和 `JIANGUO_CONFIG_PATH`。
+4. 以 **Secret** 类型添加 `SYNC_TOKEN` 和 `ACTIONS_TOKEN`，然后重新部署。`ACTIONS_TOKEN` 供 GitHub Actions 上报历史和申请翻牌调度租约使用，建议与 `SYNC_TOKEN` 使用不同的随机值。仅在不使用 KV、回退坚果云 WebDAV 时才需要 `JIANGUO_USERNAME`、`JIANGUO_APP_PASSWORD` 和 `JIANGUO_CONFIG_PATH`。
 
 ### Wrangler
 
@@ -99,6 +100,20 @@ const history = await response.json();
 ```
 
 历史只保留全量累计汇总、最近 500 条事件、最近 120 次运行和最近 90 天趋势。GitHub Actions 使用 `ACTIONS_TOKEN` 上报，每个 `run_id` 只累计一次。
+
+## 翻牌调度租约
+
+GitHub Actions 每 5 分钟唤醒一次，先向私有接口申请租约：
+
+```json
+POST /api/gwent/schedule
+Authorization: Bearer <ACTIONS_TOKEN>
+Content-Type: application/json
+
+{"action":"claim","lease_token":"<GITHUB_RUN_ID>:<GITHUB_RUN_ATTEMPT>","min_interval_seconds":21900}
+```
+
+只有返回 `due: true` 的运行才会翻牌；任务结束后使用同一个 `lease_token` 发送 `{"action":"complete"}`。KV 中还会记录最近一次申请时间，因此即使历史上报失败或任务异常退出，也不会在下一次 5 分钟唤醒时重复消耗翻牌次数。
 
 ## 测试
 

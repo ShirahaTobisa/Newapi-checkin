@@ -9,7 +9,7 @@
 - ✅ HTTP 直连，无需浏览器
 - ✅ GitHub Actions 自动化执行
 - ✅ **每日签到记录**（Actions 摘要 + 完整日志附件，保留 90 天）
-- ✅ **维云翻牌独立任务**（北京时间 01:00 起每 6 小时运行，每个 `vsllm.com` 账号翻 3 次，每次先激活 50% 加成）
+- ✅ **维云翻牌独立任务**（每 5 分钟唤醒检查；距上次历史运行至少 6 小时 5 分钟才翻牌，每个 `vsllm.com` 账号最多翻 3 次，每次先激活 50% 加成）
 - ✅ **翻牌记录仪表盘**（全账号累计、单账号统计、奖品分布、每日趋势和最近 500 条明细）
 - ✅ 错误处理和超时控制
 - ✅ 支持手动触发和定时任务
@@ -64,12 +64,18 @@ https://你的用户名.github.io/Newapi-checkin/config_generator.html
 坚果云 WebDAV 不允许浏览器跨域访问，在线页面、`file://` 和 Firefox 都不能直接绕过。项目提供了一个固定上游、带令牌鉴权的私有 Cloudflare Worker 中继；不再使用会接触应用密码的公共 CORS 代理。
 
 1. 按照 [worker/README.md](worker/README.md) 在 Cloudflare Workers 部署中继。
-2. 在 Worker 中配置 Secrets：`JIANGUO_USERNAME`、`JIANGUO_APP_PASSWORD`、`SYNC_TOKEN`。
+2. 在 Worker 中配置 Secrets：`JIANGUO_USERNAME`、`JIANGUO_APP_PASSWORD`、`SYNC_TOKEN`、`ACTIONS_TOKEN`。
 3. 将 `ALLOWED_ORIGINS` 设置为你的 GitHub Pages 或自定义域名 Origin，例如 `https://你的用户名.github.io`。
 4. 在网页生成器的“云端同步”中选择“坚果云”；本 fork 已预置 `https://newapi-sync.mornye.uk/api/config`，只需填写 `SYNC_TOKEN`。
 5. 保存成功后，把页面生成的 `CONFIG_URL`、`CONFIG_AUTH` 添加到 GitHub Actions Secrets。
 
 之后任意设备只需填写同一个 Worker 地址和同步令牌，即可读取或更新同一份配置。坚果云邮箱和应用密码只保存在你自己的 Worker Secrets 中。
+
+### 维云翻牌调度
+
+`.github/workflows/gwent.yml` 每 5 分钟检查一次，但不会每 5 分钟真实翻牌。Worker 会用 KV 租约记录最近一次任务申请和完成时间，只有距离上一轮至少 6 小时 5 分钟才执行；任务结束后即使历史上报失败，租约仍会阻止重复运行。翻牌日志可在 Actions 的 Summary 或 Artifacts 中查看，额度和明细也会同步到首页仪表盘。
+
+该工作流优先使用仓库 Secret `ACTIONS_TOKEN`，其值应与 Worker 的同名 Secret 一致；未配置时会回退到现有 `CONFIG_AUTH`，用于兼容两个令牌原本就相同的部署。
 
 ### 💻 方式 2：命令行配置助手
 

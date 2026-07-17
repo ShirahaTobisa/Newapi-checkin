@@ -7,6 +7,7 @@ const MAX_BODY_BYTES = 256 * 1024;
 
 const endpoint = "https://relay.example/api/config";
 const historyEndpoint = "https://relay.example/api/gwent/history";
+const scheduleEndpoint = "https://relay.example/api/gwent/schedule";
 const defaultEnv = {
   ALLOWED_ORIGINS: "https://app.example, null",
   JIANGUO_USERNAME: "user@example.com",
@@ -40,6 +41,15 @@ function historyRequest(method, { origin = "https://app.example", headers = {}, 
   return new Request(historyEndpoint, { method, headers: requestHeaders, body });
 }
 
+function scheduleRequest(method, { origin = "https://app.example", headers = {}, body } = {}) {
+  const requestHeaders = new Headers(headers);
+  if (origin !== null) requestHeaders.set("Origin", origin);
+  if (method === "POST" && !requestHeaders.has("Authorization")) {
+    requestHeaders.set("Authorization", "Bearer actions-secret");
+  }
+  return new Request(scheduleEndpoint, { method, headers: requestHeaders, body });
+}
+
 function mockKv(initialValue = null) {
   let value = initialValue;
   return {
@@ -57,6 +67,22 @@ function mockKv(initialValue = null) {
 function mockHistoryKv(initialValue = null) {
   const values = new Map();
   if (initialValue !== null) values.set("gwent-history-v1.json", initialValue);
+  return {
+    async get(key) {
+      return values.get(key) ?? null;
+    },
+    async put(key, value) {
+      values.set(key, value);
+    },
+    value(key) {
+      return values.get(key) ?? null;
+    },
+  };
+}
+
+function mockScheduleKv(initialValue = null) {
+  const values = new Map();
+  if (initialValue !== null) values.set("gwent-schedule-v1.json", initialValue);
   return {
     async get(key) {
       return values.get(key) ?? null;
@@ -112,6 +138,216 @@ function historyPayload() {
     ],
   };
 }
+
+test("schedule endpoint exposes only POST and OPTIONS and requires Actions token", async () => {
+  const env = { ...defaultEnv, ACTIONS_TOKEN: "actions-secret", CONFIG_KV: mockScheduleKv() };
+  const options = await handleRequest(scheduleRequest("OPTIONS"), env);
+  assert.equal(options.status, 204);
+  assert.equal(options.headers.get("Access-Control-Allow-Methods"), "POST, OPTIONS");
+
+  const badPreflight = await handleRequest(
+    scheduleRequest("OPTIONS", { headers: { "Access-Control-Request-Method": "GET" } }),
+    env,
+  );
+  assert.equal(badPreflight.status, 405);
+
+  const unauthorized = await handleRequest(
+    scheduleRequest("POST", {
+      headers: { Authorization: "Bearer wrong" },
+      body: JSON.stringify({ action: "claim", lease_token: "1:1" }),
+    }),
+    env,
+  );
+  assert.equal(unauthorized.status, 401);
+
+  const method = await handleRequest(new Request(scheduleEndpoint, { method: "GET" }), env);
+  assert.equal(method.status, 405);
+  assert.equal((await errorBody(method)).error.code, "method_not_allowed");
+});
+
+test("schedule claim persists a lease and blocks other runs", async () => {
+  const kv = mockScheduleKv();
+  const env = { ...defaultEnv, ACTIONS_TOKEN: "actions-secret", CONFIG_KV: kv };
+  const claim = await handleRequest(
+    scheduleRequest("POST", {
+      body: JSON.stringify({ action: "claim", lease_token: "100:1", min_interval_seconds: 21900 }),
+    }),
+    env,
+  );
+  const claimBody = await claim.json();
+  assert.equal(claim.status, 200);
+  assert.equal(claimBody.due, true);
+  assert.equal(claimBody.claimed, true);
+  assert.match(claimBody.lease_expires_at, /^\d{4}-\d{2}-\d{2}T/u);
+
+  const stored = JSON.parse(kv.value("gwent-schedule-v1.json"));
+  assert.equal(stored.lease.token, "100:1");
+  assert.equal(stored.last_claimed_at, stored.lease.claimed_at);
+
+  const blocked = await handleRequest(
+    scheduleRequest("POST", {
+      body: JSON.stringify({ action: "claim", lease_token: "101:1", min_interval_seconds: 21900 }),
+    }),
+    env,
+  );
+  const blockedBody = await blocked.json();
+  assert.equal(blocked.status, 200);
+  assert.equal(blockedBody.due, false);
+  assert.equal(blockedBody.reason, "lease_active");
+
+  const retry = await handleRequest(
+    scheduleRequest("POST", {
+      body: JSON.stringify({ action: "claim", lease_token: "100:1", min_interval_seconds: 21900 }),
+    }),
+    env,
+  );
+  const retryBody = await retry.json();
+  assert.equal(retry.status, 200);
+  assert.equal(retryBody.due, true);
+  assert.equal(retryBody.claimed, false);
+  assert.equal(retryBody.reused, true);
+});
+
+test("schedule complete validates ownership, is idempotent, and enforces the interval", async () => {
+  const kv = mockScheduleKv();
+  const env = { ...defaultEnv, ACTIONS_TOKEN: "actions-secret", CONFIG_KV: kv };
+  await handleRequest(
+    scheduleRequest("POST", { body: JSON.stringify({ action: "claim", lease_token: "200:1" }) }),
+    env,
+  );
+
+  const wrong = await handleRequest(
+    scheduleRequest("POST", {
+      body: JSON.stringify({ action: "complete", lease_token: "201:1" }),
+    }),
+    env,
+  );
+  assert.equal(wrong.status, 409);
+  assert.equal((await errorBody(wrong)).error.code, "schedule_lease_not_owned");
+
+  const complete = await handleRequest(
+    scheduleRequest("POST", {
+      body: JSON.stringify({ action: "complete", lease_token: "200:1" }),
+    }),
+    env,
+  );
+  const completeBody = await complete.json();
+  assert.equal(complete.status, 200);
+  assert.equal(completeBody.completed, true);
+
+  const repeat = await handleRequest(
+    scheduleRequest("POST", {
+      body: JSON.stringify({ action: "complete", lease_token: "200:1" }),
+    }),
+    env,
+  );
+  const repeatBody = await repeat.json();
+  assert.equal(repeat.status, 200);
+  assert.equal(repeatBody.idempotent, true);
+
+  const tooSoon = await handleRequest(
+    scheduleRequest("POST", {
+      body: JSON.stringify({ action: "claim", lease_token: "202:1", min_interval_seconds: 21900 }),
+    }),
+    env,
+  );
+  const tooSoonBody = await tooSoon.json();
+  assert.equal(tooSoon.status, 200);
+  assert.equal(tooSoonBody.due, false);
+  assert.equal(tooSoonBody.reason, "interval");
+  assert.ok(tooSoonBody.retry_after_seconds > 0);
+
+  const forced = await handleRequest(
+    scheduleRequest("POST", {
+      body: JSON.stringify({ action: "claim", lease_token: "202:1", force: true }),
+    }),
+    env,
+  );
+  assert.equal(forced.status, 200);
+  assert.equal((await forced.json()).due, true);
+});
+
+test("an expired lease still leaves an interval guard against crash retries", async () => {
+  const now = Date.now();
+  const claimedAt = new Date(now - 60_000).toISOString();
+  const kv = mockScheduleKv(
+    JSON.stringify({
+      schema_version: 1,
+      completed_at: null,
+      last_claimed_at: claimedAt,
+      last_completed_token: null,
+      lease: {
+        token: "300:1",
+        claimed_at: claimedAt,
+        expires_at: new Date(now - 1_000).toISOString(),
+      },
+      updated_at: claimedAt,
+    }),
+  );
+  const env = { ...defaultEnv, ACTIONS_TOKEN: "actions-secret", CONFIG_KV: kv };
+  const response = await handleRequest(
+    scheduleRequest("POST", {
+      body: JSON.stringify({ action: "claim", lease_token: "301:1", min_interval_seconds: 21900 }),
+    }),
+    env,
+  );
+  const body = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(body.due, false);
+  assert.equal(body.reason, "interval");
+});
+
+test("schedule rejects malformed payloads and fails closed on corrupt state", async () => {
+  const env = { ...defaultEnv, ACTIONS_TOKEN: "actions-secret", CONFIG_KV: mockScheduleKv() };
+  const invalid = await handleRequest(
+    scheduleRequest("POST", {
+      body: JSON.stringify({ action: "claim", lease_token: "bad token" }),
+    }),
+    env,
+  );
+  assert.equal(invalid.status, 400);
+  assert.equal((await errorBody(invalid)).error.code, "invalid_schedule");
+
+  const shortInterval = await handleRequest(
+    scheduleRequest("POST", {
+      body: JSON.stringify({
+        action: "claim",
+        lease_token: "401:1",
+        min_interval_seconds: 0,
+      }),
+    }),
+    env,
+  );
+  assert.equal(shortInterval.status, 400);
+  assert.equal((await errorBody(shortInterval)).error.code, "invalid_schedule");
+
+  const future = await handleRequest(
+    scheduleRequest("POST", {
+      body: JSON.stringify({
+        action: "complete",
+        lease_token: "402:1",
+        completed_at: new Date(Date.now() + 60_000).toISOString(),
+      }),
+    }),
+    env,
+  );
+  assert.equal(future.status, 400);
+  assert.equal((await errorBody(future)).error.code, "invalid_schedule");
+
+  const corruptEnv = {
+    ...defaultEnv,
+    ACTIONS_TOKEN: "actions-secret",
+    CONFIG_KV: mockScheduleKv("not-json"),
+  };
+  const corrupt = await handleRequest(
+    scheduleRequest("POST", {
+      body: JSON.stringify({ action: "claim", lease_token: "400:1" }),
+    }),
+    corruptEnv,
+  );
+  assert.equal(corrupt.status, 500);
+  assert.equal((await errorBody(corrupt)).error.code, "schedule_corrupt");
+});
 
 test("public history GET returns an empty safe document", async () => {
   const response = await handleRequest(
