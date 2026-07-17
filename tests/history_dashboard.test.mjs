@@ -18,6 +18,7 @@ test("history dashboard assets compile and reference only the safe read endpoint
 
 test("dashboard provides responsive, loading, empty, error, and stale states", () => {
   assert.match(css, /@media \(max-width: 720px\)/u);
+  assert.match(css, /\[hidden\]\s*\{[^}]*display:\s*none\s*!important/u);
   assert.match(css, /\.is-loading/u);
   assert.match(html, /id="events-empty"/u);
   assert.match(html, /id="error-banner"/u);
