@@ -1,7 +1,12 @@
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
-from checkin import NewAPICheckin
+from checkin import (
+    NewAPICheckin,
+    gwent_event_status,
+    history_account_key,
+    publish_gwent_history,
+)
 
 
 def response(status_code, payload):
@@ -97,6 +102,41 @@ class GwentDrawTest(unittest.TestCase):
 
         self.assertEqual(len(results), 2)
         self.assertEqual(client.gwent_draw.call_count, 2)
+
+    def test_history_account_key_is_stable_without_exposing_user_id(self):
+        account = {'url': 'https://vsllm.com', 'user_id': '6200', 'name': '账号3'}
+
+        first = history_account_key(account, 3)
+        second = history_account_key(account, 99)
+
+        self.assertEqual(first, second)
+        self.assertEqual(len(first), 16)
+        self.assertNotIn('6200', first)
+
+    def test_event_status_distinguishes_cooldown_and_auth(self):
+        self.assertEqual(gwent_event_status({'success': True}), 'success')
+        self.assertEqual(gwent_event_status({'message': '还在冷却中'}), 'cooldown')
+        self.assertEqual(gwent_event_status({'message': 'Session 认证失败'}), 'auth')
+        self.assertEqual(gwent_event_status({'message': '网络错误'}), 'error')
+
+    @patch('checkin.time.sleep')
+    @patch('checkin.requests.post')
+    def test_history_publish_uses_bearer_token_and_never_logs_it(self, post, _sleep):
+        response_mock = Mock(status_code=200)
+        response_mock.json.return_value = {'success': True, 'duplicate': False}
+        post.return_value = response_mock
+        payload = {'schema_version': 1, 'run': {}, 'events': []}
+
+        with patch.dict('os.environ', {
+            'HISTORY_URL': 'https://relay.example/api/gwent/history',
+            'HISTORY_AUTH': 'token:history-secret',
+            'HISTORY_REQUIRED': 'true',
+        }, clear=False):
+            self.assertTrue(publish_gwent_history(payload))
+
+        _, kwargs = post.call_args
+        self.assertEqual(kwargs['headers']['Authorization'], 'Bearer history-secret')
+        self.assertEqual(kwargs['json'], payload)
 
 
 if __name__ == '__main__':

@@ -1,6 +1,6 @@
 # Cloudflare Worker 配置中继
 
-这个模块把浏览器对 `GET /api/config` 和 `PUT /api/config` 的请求中继到固定的坚果云 WebDAV 文件：
+这个模块提供账号配置同步和脱敏翻牌历史两组接口。浏览器对 `GET /api/config` 和 `PUT /api/config` 的请求会写入 Cloudflare KV；未绑定 KV 时回退到固定的坚果云 WebDAV 文件：
 
 `https://dav.jianguoyun.com/dav/newapi-config.json`
 
@@ -8,7 +8,8 @@
 
 ## 安全边界
 
-- `GET` 和 `PUT` 必须携带 `Authorization: Bearer <SYNC_TOKEN>`。
+- 配置 `GET` 接受 `SYNC_TOKEN` 或 `ACTIONS_TOKEN`，配置 `PUT` 只接受 `SYNC_TOKEN`。
+- `GET /api/gwent/history` 公开返回脱敏汇总；`POST /api/gwent/history` 只接受 `ACTIONS_TOKEN`，并拒绝 Cookie、Session、Token、密码等敏感字段。
 - `ALLOWED_ORIGINS` 是逗号或换行分隔的精确白名单，不支持通配符、子域推断或前缀匹配。
 - 本地 `file://` 页面通常发送 `Origin: null`。只有在白名单中明确加入字面值 `null` 才会放行。
 - 无 `Origin` 的非浏览器请求仍可使用，但同样必须通过 Bearer 鉴权。
@@ -47,12 +48,13 @@ ALLOWED_ORIGINS = "https://your-name.github.io"
 ALLOWED_ORIGINS = "https://your-name.github.io, null"
 ```
 
-依次写入三个 secret：
+按使用方式写入 secret：
 
 ```bash
 npx wrangler secret put JIANGUO_USERNAME
 npx wrangler secret put JIANGUO_APP_PASSWORD
 npx wrangler secret put SYNC_TOKEN
+npx wrangler secret put ACTIONS_TOKEN
 npx wrangler deploy
 ```
 
@@ -83,6 +85,20 @@ if (!putResponse.ok) throw new Error(await putResponse.text());
 ```
 
 Bearer token 放在浏览器页面里意味着页面使用者可以读取它。因此应把页面本身限制在可信环境，不要把带真实 token 的静态文件提交到公开仓库。
+
+## 翻牌历史接口
+
+仪表盘直接读取公开的脱敏历史，不需要把任何令牌放进前端：
+
+```js
+const response = await fetch(
+  "https://your-worker.example/api/gwent/history",
+  { cache: "no-store" },
+);
+const history = await response.json();
+```
+
+历史只保留全量累计汇总、最近 500 条事件、最近 120 次运行和最近 90 天趋势。GitHub Actions 使用 `ACTIONS_TOKEN` 上报，每个 `run_id` 只累计一次。
 
 ## 测试
 

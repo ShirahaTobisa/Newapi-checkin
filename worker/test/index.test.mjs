@@ -6,6 +6,7 @@ import { handleRequest } from "../src/index.mjs";
 const MAX_BODY_BYTES = 256 * 1024;
 
 const endpoint = "https://relay.example/api/config";
+const historyEndpoint = "https://relay.example/api/gwent/history";
 const defaultEnv = {
   ALLOWED_ORIGINS: "https://app.example, null",
   JIANGUO_USERNAME: "user@example.com",
@@ -30,6 +31,15 @@ async function errorBody(response) {
   return response.json();
 }
 
+function historyRequest(method, { origin = "https://app.example", headers = {}, body } = {}) {
+  const requestHeaders = new Headers(headers);
+  if (origin !== null) requestHeaders.set("Origin", origin);
+  if (method === "POST" && !requestHeaders.has("Authorization")) {
+    requestHeaders.set("Authorization", "Bearer actions-secret");
+  }
+  return new Request(historyEndpoint, { method, headers: requestHeaders, body });
+}
+
 function mockKv(initialValue = null) {
   let value = initialValue;
   return {
@@ -43,6 +53,146 @@ function mockKv(initialValue = null) {
     },
   };
 }
+
+function mockHistoryKv(initialValue = null) {
+  const values = new Map();
+  if (initialValue !== null) values.set("gwent-history-v1.json", initialValue);
+  return {
+    async get(key) {
+      return values.get(key) ?? null;
+    },
+    async put(key, value) {
+      values.set(key, value);
+    },
+    value(key) {
+      return values.get(key) ?? null;
+    },
+  };
+}
+
+function historyPayload() {
+  return {
+    schema_version: 1,
+    run: {
+      run_id: "12345:1",
+      run_number: 9,
+      run_attempt: 1,
+      started_at: "2026-07-17T01:00:00Z",
+      finished_at: "2026-07-17T01:00:10Z",
+      planned_draws: 3,
+      status: "partial",
+    },
+    events: [
+      {
+        event_id: "12345:1:abcdef1234567890:1",
+        account_key: "abcdef1234567890",
+        account_name: "账号1",
+        attempt: 1,
+        occurred_at: "2026-07-17T01:00:02Z",
+        status: "success",
+        prize_name: "小额惊喜",
+        prize_quota: 1000,
+        prize_rarity: "rare",
+        bonus_percent: 50,
+        message: "翻牌成功",
+      },
+      {
+        event_id: "12345:1:abcdef1234567890:2",
+        account_key: "abcdef1234567890",
+        account_name: "账号1",
+        attempt: 2,
+        occurred_at: "2026-07-17T01:00:03Z",
+        status: "cooldown",
+        prize_name: null,
+        prize_quota: 0,
+        prize_rarity: "unknown",
+        bonus_percent: 0,
+        message: "还在冷却中",
+      },
+    ],
+  };
+}
+
+test("public history GET returns an empty safe document", async () => {
+  const response = await handleRequest(
+    historyRequest("GET"),
+    { ...defaultEnv, CONFIG_KV: mockHistoryKv(), ACTIONS_TOKEN: "actions-secret" },
+  );
+  const body = await response.json();
+
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("Access-Control-Allow-Origin"), "https://app.example");
+  assert.equal(body.totals.total_draws, 0);
+  assert.deepEqual(body.events, []);
+});
+
+test("history POST aggregates events and is idempotent per run", async () => {
+  const kv = mockHistoryKv();
+  const env = { ...defaultEnv, CONFIG_KV: kv, ACTIONS_TOKEN: "actions-secret" };
+  const payload = JSON.stringify(historyPayload());
+
+  const first = await handleRequest(historyRequest("POST", { body: payload }), env);
+  assert.equal(first.status, 200);
+  assert.equal((await first.json()).duplicate, false);
+
+  const duplicate = await handleRequest(historyRequest("POST", { body: payload }), env);
+  assert.equal(duplicate.status, 200);
+  assert.equal((await duplicate.json()).duplicate, true);
+
+  const stored = JSON.parse(kv.value("gwent-history-v1.json"));
+  assert.equal(stored.totals.total_runs, 1);
+  assert.equal(stored.totals.total_draws, 1);
+  assert.equal(stored.totals.total_wins, 1);
+  assert.equal(stored.totals.total_quota, 1000);
+  assert.equal(stored.accounts[0].total_draws, 1);
+  assert.equal(stored.prizes[0].prize_name, "小额惊喜");
+  assert.equal(stored.prizes[0].total_draws, 1);
+  assert.equal(stored.events.length, 2);
+  assert.equal(stored.daily[0].date, "2026-07-17");
+});
+
+test("history POST requires the Actions token and rejects sensitive fields", async () => {
+  const env = { ...defaultEnv, CONFIG_KV: mockHistoryKv(), ACTIONS_TOKEN: "actions-secret" };
+  const unauthorized = await handleRequest(
+    historyRequest("POST", {
+      headers: { Authorization: "Bearer sync-secret" },
+      body: JSON.stringify(historyPayload()),
+    }),
+    env,
+  );
+  assert.equal(unauthorized.status, 401);
+
+  const payload = historyPayload();
+  payload.events[0].session = "must-not-be-accepted";
+  const sensitive = await handleRequest(
+    historyRequest("POST", { body: JSON.stringify(payload) }),
+    env,
+  );
+  assert.equal(sensitive.status, 400);
+  assert.equal((await errorBody(sensitive)).error.code, "sensitive_history_field");
+});
+
+test("Actions token can read config but cannot overwrite it", async () => {
+  const env = {
+    ...defaultEnv,
+    ACTIONS_TOKEN: "actions-secret",
+    CONFIG_KV: mockKv('{"accounts":[]}'),
+  };
+  const read = await handleRequest(
+    request("GET", { headers: { Authorization: "Bearer actions-secret" } }),
+    env,
+  );
+  assert.equal(read.status, 200);
+
+  const write = await handleRequest(
+    request("PUT", {
+      headers: { Authorization: "Bearer actions-secret" },
+      body: '{"accounts":[]}',
+    }),
+    env,
+  );
+  assert.equal(write.status, 401);
+});
 
 test("KV binding stores and retrieves config without WebDAV", async () => {
   const kv = mockKv();

@@ -49,6 +49,9 @@ jobs:
           CONFIG_URL: ${{ secrets.CONFIG_URL }}
           CONFIG_AUTH: ${{ secrets.CONFIG_AUTH }}
           NEWAPI_ACCOUNTS: ${{ secrets.NEWAPI_ACCOUNTS }}
+          HISTORY_URL: https://newapi-sync.mornye.uk/api/gwent/history
+          HISTORY_AUTH: ${{ secrets.CONFIG_AUTH }}
+          HISTORY_REQUIRED: 'true'
         run: |
           set +e
           python -u checkin.py 2>&1 | tee "$LOG_FILE"
@@ -61,7 +64,13 @@ jobs:
 
           path = Path(os.environ["LOG_FILE"])
           text = path.read_text(encoding="utf-8", errors="replace")
-          for name in ("CONFIG_URL", "CONFIG_AUTH", "NEWAPI_ACCOUNTS"):
+          for name in (
+              "CONFIG_URL",
+              "CONFIG_AUTH",
+              "NEWAPI_ACCOUNTS",
+              "HISTORY_URL",
+              "HISTORY_AUTH",
+          ):
               value = os.environ.get(name, "")
               if value:
                   text = text.replace(value, "***")

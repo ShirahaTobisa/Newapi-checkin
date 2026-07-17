@@ -1,8 +1,15 @@
-const API_PATH = "/api/config";
+const CONFIG_API_PATH = "/api/config";
+const HISTORY_API_PATH = "/api/gwent/history";
 const UPSTREAM_ORIGIN = "https://dav.jianguoyun.com";
 const DEFAULT_CONFIG_PATH = "/dav/newapi-config.json";
 const KV_CONFIG_KEY = "newapi-config.json";
+const KV_HISTORY_KEY = "gwent-history-v1.json";
 const MAX_BODY_BYTES = 256 * 1024;
+const MAX_HISTORY_EVENTS = 500;
+const MAX_HISTORY_RUNS = 120;
+const MAX_HISTORY_DAYS = 90;
+const MAX_EVENTS_PER_RUN = 100;
+const SENSITIVE_HISTORY_FIELD = /(?:authorization|cf_clearance|cookie|password|session|token)/iu;
 
 class HttpError extends Error {
   constructor(status, code, message, details, headers) {
@@ -72,13 +79,19 @@ function jsonError(error, corsOrigin) {
   return new Response(JSON.stringify(payload), { status, headers });
 }
 
-function optionsResponse(corsOrigin) {
+function optionsResponse(corsOrigin, methods) {
   const headers = new Headers({
     "Access-Control-Allow-Headers": "Authorization, Content-Type",
-    "Access-Control-Allow-Methods": "GET, PUT, OPTIONS",
+    "Access-Control-Allow-Methods": methods.join(", "),
   });
   addCommonHeaders(headers, corsOrigin);
   return new Response(null, { status: 204, headers });
+}
+
+function jsonResponse(payload, status, corsOrigin) {
+  const headers = new Headers({ "Content-Type": "application/json; charset=utf-8" });
+  addCommonHeaders(headers, corsOrigin);
+  return new Response(JSON.stringify(payload), { status, headers });
 }
 
 function requiredSecret(env, name) {
@@ -371,16 +384,308 @@ async function callKv(request, env) {
   return new Response(null, { status: 204, headers });
 }
 
+function emptyHistory() {
+  return {
+    schema_version: 1,
+    updated_at: null,
+    totals: {
+      total_runs: 0,
+      total_draws: 0,
+      total_wins: 0,
+      total_quota: 0,
+      total_accounts: 0,
+    },
+    accounts: [],
+    prizes: [],
+    events: [],
+    runs: [],
+    daily: [],
+  };
+}
+
+function containsSensitiveHistoryField(value) {
+  if (Array.isArray(value)) {
+    return value.some((item) => containsSensitiveHistoryField(item));
+  }
+  if (value === null || typeof value !== "object") {
+    return false;
+  }
+  return Object.entries(value).some(
+    ([key, item]) => SENSITIVE_HISTORY_FIELD.test(key) || containsSensitiveHistoryField(item),
+  );
+}
+
+function requiredHistoryString(value, name, maxLength, pattern) {
+  if (typeof value !== "string" || value.length === 0 || value.length > maxLength) {
+    throw new HttpError(400, "invalid_history", `${name} is invalid.`);
+  }
+  if (pattern && !pattern.test(value)) {
+    throw new HttpError(400, "invalid_history", `${name} is invalid.`);
+  }
+  return value;
+}
+
+function optionalHistoryString(value, name, maxLength) {
+  if (value === null || value === undefined || value === "") {
+    return null;
+  }
+  if (typeof value !== "string" || value.length > maxLength) {
+    throw new HttpError(400, "invalid_history", `${name} is invalid.`);
+  }
+  return value;
+}
+
+function historyInteger(value, name, maximum = Number.MAX_SAFE_INTEGER) {
+  if (!Number.isSafeInteger(value) || value < 0 || value > maximum) {
+    throw new HttpError(400, "invalid_history", `${name} is invalid.`);
+  }
+  return value;
+}
+
+function historyTimestamp(value, name) {
+  const timestamp = requiredHistoryString(value, name, 40);
+  if (!Number.isFinite(Date.parse(timestamp))) {
+    throw new HttpError(400, "invalid_history", `${name} is invalid.`);
+  }
+  return timestamp;
+}
+
+function normalizeHistoryPayload(payload) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    throw new HttpError(400, "invalid_history", "History payload must be an object.");
+  }
+  if (containsSensitiveHistoryField(payload)) {
+    throw new HttpError(400, "sensitive_history_field", "History payload contains a sensitive field.");
+  }
+  if (payload.schema_version !== 1 || !payload.run || !Array.isArray(payload.events)) {
+    throw new HttpError(400, "invalid_history", "History payload schema is invalid.");
+  }
+  if (payload.events.length > MAX_EVENTS_PER_RUN) {
+    throw new HttpError(400, "invalid_history", "History payload has too many events.");
+  }
+
+  const runStatuses = new Set(["success", "partial", "error"]);
+  const eventStatuses = new Set(["success", "cooldown", "auth", "error"]);
+  const rarities = new Set(["common", "rare", "epic", "legendary", "unknown"]);
+  const run = {
+    run_id: requiredHistoryString(payload.run.run_id, "run.run_id", 96, /^[A-Za-z0-9:_-]+$/u),
+    run_number: historyInteger(payload.run.run_number, "run.run_number"),
+    run_attempt: historyInteger(payload.run.run_attempt, "run.run_attempt", 1000),
+    started_at: historyTimestamp(payload.run.started_at, "run.started_at"),
+    finished_at: historyTimestamp(payload.run.finished_at, "run.finished_at"),
+    planned_draws: historyInteger(payload.run.planned_draws, "run.planned_draws", 20),
+    status: requiredHistoryString(payload.run.status, "run.status", 16),
+  };
+  if (!runStatuses.has(run.status)) {
+    throw new HttpError(400, "invalid_history", "run.status is invalid.");
+  }
+
+  const events = payload.events.map((event, index) => {
+    if (!event || typeof event !== "object" || Array.isArray(event)) {
+      throw new HttpError(400, "invalid_history", `events[${index}] is invalid.`);
+    }
+    const normalized = {
+      event_id: requiredHistoryString(
+        event.event_id,
+        `events[${index}].event_id`,
+        128,
+        /^[A-Za-z0-9:_-]+$/u,
+      ),
+      account_key: requiredHistoryString(
+        event.account_key,
+        `events[${index}].account_key`,
+        32,
+        /^[a-f0-9]{16,32}$/u,
+      ),
+      account_name: requiredHistoryString(event.account_name, `events[${index}].account_name`, 64),
+      attempt: historyInteger(event.attempt, `events[${index}].attempt`, 20),
+      occurred_at: historyTimestamp(event.occurred_at, `events[${index}].occurred_at`),
+      status: requiredHistoryString(event.status, `events[${index}].status`, 16),
+      prize_name: optionalHistoryString(event.prize_name, `events[${index}].prize_name`, 80),
+      prize_quota: historyInteger(event.prize_quota ?? 0, `events[${index}].prize_quota`, 1e12),
+      prize_rarity: optionalHistoryString(
+        event.prize_rarity,
+        `events[${index}].prize_rarity`,
+        16,
+      ) || "unknown",
+      bonus_percent: historyInteger(
+        event.bonus_percent ?? 0,
+        `events[${index}].bonus_percent`,
+        1000,
+      ),
+      message: optionalHistoryString(event.message, `events[${index}].message`, 240),
+    };
+    if (!eventStatuses.has(normalized.status) || !rarities.has(normalized.prize_rarity)) {
+      throw new HttpError(400, "invalid_history", `events[${index}] has an invalid enum value.`);
+    }
+    return normalized;
+  });
+
+  return { run, events };
+}
+
+function beijingDate(timestamp) {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date(timestamp));
+}
+
+async function readHistory(env) {
+  const value = await env.CONFIG_KV.get(KV_HISTORY_KEY);
+  if (value === null) {
+    return emptyHistory();
+  }
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && parsed.schema_version === 1 ? parsed : emptyHistory();
+  } catch {
+    throw new HttpError(500, "history_corrupt", "Stored history is not valid JSON.");
+  }
+}
+
+function mergeHistory(history, input) {
+  if (history.runs.some((run) => run.run_id === input.run.run_id)) {
+    return { history, duplicate: true };
+  }
+
+  const accounts = new Map(history.accounts.map((account) => [account.account_key, account]));
+  const prizes = new Map((history.prizes || []).map((prize) => [prize.prize_name, prize]));
+  const daily = new Map(history.daily.map((day) => [day.date, day]));
+  let successfulDraws = 0;
+  let totalQuota = 0;
+
+  for (const event of input.events) {
+    const account = accounts.get(event.account_key) || {
+      account_key: event.account_key,
+      account_name: event.account_name,
+      total_draws: 0,
+      total_wins: 0,
+      total_quota: 0,
+      last_event_at: null,
+      last_status: null,
+    };
+    account.account_name = event.account_name;
+    account.last_event_at = event.occurred_at;
+    account.last_status = event.status;
+
+    if (event.status === "success") {
+      successfulDraws += 1;
+      totalQuota += event.prize_quota;
+      history.totals.total_draws += 1;
+      history.totals.total_quota += event.prize_quota;
+      account.total_draws += 1;
+      account.total_quota += event.prize_quota;
+      if (event.prize_quota > 0) {
+        history.totals.total_wins += 1;
+        account.total_wins += 1;
+      }
+
+      const prizeName = event.prize_name || "未知奖品";
+      const prize = prizes.get(prizeName) || {
+        prize_name: prizeName,
+        prize_rarity: event.prize_rarity,
+        total_draws: 0,
+        total_quota: 0,
+      };
+      prize.prize_rarity = event.prize_rarity;
+      prize.total_draws += 1;
+      prize.total_quota += event.prize_quota;
+      prizes.set(prizeName, prize);
+
+      const date = beijingDate(event.occurred_at);
+      const day = daily.get(date) || { date, total_draws: 0, total_wins: 0, total_quota: 0 };
+      day.total_draws += 1;
+      day.total_quota += event.prize_quota;
+      if (event.prize_quota > 0) day.total_wins += 1;
+      daily.set(date, day);
+    }
+    accounts.set(event.account_key, account);
+  }
+
+  history.totals.total_runs += 1;
+  history.totals.total_accounts = accounts.size;
+  history.accounts = [...accounts.values()].sort((left, right) =>
+    left.account_name.localeCompare(right.account_name, "zh-CN"),
+  );
+  history.prizes = [...prizes.values()].sort((left, right) =>
+    right.total_draws - left.total_draws || right.total_quota - left.total_quota,
+  );
+  history.events = [
+    ...input.events.map((event) => ({ ...event, run_id: input.run.run_id })),
+    ...history.events,
+  ].slice(0, MAX_HISTORY_EVENTS);
+  history.runs = [
+    {
+      ...input.run,
+      account_count: new Set(input.events.map((event) => event.account_key)).size,
+      successful_draws: successfulDraws,
+      total_quota: totalQuota,
+    },
+    ...history.runs,
+  ].slice(0, MAX_HISTORY_RUNS);
+  history.daily = [...daily.values()]
+    .sort((left, right) => left.date.localeCompare(right.date))
+    .slice(-MAX_HISTORY_DAYS);
+  history.updated_at = input.run.finished_at;
+  return { history, duplicate: false };
+}
+
+async function handleHistory(request, env, corsOrigin) {
+  if (!env.CONFIG_KV || typeof env.CONFIG_KV.get !== "function") {
+    throw new HttpError(500, "worker_not_configured", "CONFIG_KV is not configured.");
+  }
+  if (request.method === "GET") {
+    return jsonResponse(await readHistory(env), 200, corsOrigin);
+  }
+
+  const actionsToken = requiredSecret(env, "ACTIONS_TOKEN");
+  requireBearerToken(request, [actionsToken]);
+  const body = await readLimitedBody(request);
+  let payload;
+  try {
+    payload = JSON.parse(new TextDecoder().decode(body));
+  } catch {
+    throw new HttpError(400, "invalid_json", "History payload must be valid JSON.");
+  }
+
+  const input = normalizeHistoryPayload(payload);
+  const current = await readHistory(env);
+  const { history, duplicate } = mergeHistory(current, input);
+  const serialized = JSON.stringify(history);
+  if (new TextEncoder().encode(serialized).byteLength > MAX_BODY_BYTES) {
+    throw new HttpError(500, "history_too_large", "Stored history exceeds the size limit.");
+  }
+  if (!duplicate) {
+    await env.CONFIG_KV.put(KV_HISTORY_KEY, serialized);
+  }
+  return jsonResponse({ success: true, duplicate, updated_at: history.updated_at }, 200, corsOrigin);
+}
+
 export async function handleRequest(request, env = {}, upstreamFetch) {
   let corsOrigin;
 
   try {
     const url = new URL(request.url);
-    if (url.pathname !== API_PATH) {
+    if (![CONFIG_API_PATH, HISTORY_API_PATH].includes(url.pathname)) {
       throw new HttpError(404, "not_found", "Endpoint not found.");
     }
 
     corsOrigin = corsOriginFor(request, env);
+
+    if (url.pathname === HISTORY_API_PATH) {
+      if (request.method === "OPTIONS") {
+        return optionsResponse(corsOrigin, ["GET", "POST", "OPTIONS"]);
+      }
+      if (!["GET", "POST"].includes(request.method)) {
+        throw new HttpError(405, "method_not_allowed", "Only GET, POST, and OPTIONS are supported.", undefined, {
+          Allow: "GET, POST, OPTIONS",
+        });
+      }
+      return await handleHistory(request, env, corsOrigin);
+    }
 
     if (request.method === "OPTIONS") {
       const requestedMethod = request.headers.get("Access-Control-Request-Method");
@@ -389,7 +694,7 @@ export async function handleRequest(request, env = {}, upstreamFetch) {
           Allow: "GET, PUT, OPTIONS",
         });
       }
-      return optionsResponse(corsOrigin);
+      return optionsResponse(corsOrigin, ["GET", "PUT", "OPTIONS"]);
     }
 
     if (!["GET", "PUT"].includes(request.method)) {
@@ -399,7 +704,10 @@ export async function handleRequest(request, env = {}, upstreamFetch) {
     }
 
     const syncToken = requiredSecret(env, "SYNC_TOKEN");
-    requireBearerToken(request, [syncToken, env.ACTIONS_TOKEN]);
+    requireBearerToken(
+      request,
+      request.method === "GET" ? [syncToken, env.ACTIONS_TOKEN] : [syncToken],
+    );
 
     if (env.CONFIG_KV && typeof env.CONFIG_KV.get === "function") {
       const response = await callKv(request, env);

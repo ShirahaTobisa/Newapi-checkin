@@ -14,7 +14,12 @@ JIANGUO_CONFIG_PATH = "/dav/newapi-config.json"
 binding = "CONFIG_KV"
 id = "replace-with-your-kv-namespace-id"
 
+[observability]
+enabled = true
+head_sampling_rate = 1
+
 # Configure these as Worker secrets; never put their values in this file:
 #   npx wrangler secret put JIANGUO_USERNAME
 #   npx wrangler secret put JIANGUO_APP_PASSWORD
 #   npx wrangler secret put SYNC_TOKEN
+#   npx wrangler secret put ACTIONS_TOKEN

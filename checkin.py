@@ -9,8 +9,10 @@ import os
 import sys
 import json
 import base64
+import hashlib
+import time
 import requests
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from urllib.parse import urlparse
 
@@ -163,7 +165,10 @@ class NewAPICheckin:
                 'prize_name': prize.get('name'),
                 'prize_quota': prize.get('quota'),
                 'prize_rarity': prize.get('rarity'),
-                'bonus_percent': payload.get('bonus_pct', payload.get('bonus_percent')),
+                'bonus_percent': payload.get(
+                    'bonus_pct',
+                    payload.get('bonus_percent', payload.get('applied_bonus_percent', 50)),
+                ),
             })
         except requests.exceptions.Timeout:
             result['message'] = '翻牌请求超时'
@@ -567,8 +572,70 @@ def load_config_from_cloud(config_url: str, config_auth: str = None) -> Optional
         return None
 
 
+def utc_timestamp() -> str:
+    """返回适合历史 API 的 UTC ISO 时间。"""
+    return datetime.now(timezone.utc).isoformat(timespec='seconds').replace('+00:00', 'Z')
+
+
+def history_account_key(account: dict, index: int) -> str:
+    """生成稳定、不可直接还原用户 ID 的账号键。"""
+    host = (urlparse(account.get('url', '')).hostname or '').lower()
+    identity = str(account.get('user_id') or account.get('name') or index)
+    return hashlib.sha256(f'{host}:{identity}'.encode('utf-8')).hexdigest()[:16]
+
+
+def gwent_event_status(result: dict) -> str:
+    if result.get('success'):
+        return 'success'
+    message = str(result.get('message', '')).lower()
+    if '冷却' in message:
+        return 'cooldown'
+    if '认证' in message or 'session' in message or 'unauthorized' in message:
+        return 'auth'
+    return 'error'
+
+
+def publish_gwent_history(payload: dict) -> bool:
+    """将脱敏翻牌记录发布到历史 API。"""
+    history_url = os.environ.get('HISTORY_URL', '').strip()
+    history_auth = os.environ.get('HISTORY_AUTH', '').strip()
+    required = os.environ.get('HISTORY_REQUIRED', '').strip().lower() == 'true'
+
+    if not history_url or not history_auth:
+        print('[历史] 未配置 HISTORY_URL/HISTORY_AUTH，跳过记录上报')
+        return not required
+
+    token = history_auth[6:] if history_auth.startswith('token:') else history_auth
+    headers = {
+        'Authorization': f'Bearer {token}',
+        'Content-Type': 'application/json',
+    }
+    for attempt in range(1, 4):
+        try:
+            response = requests.post(history_url, headers=headers, json=payload, timeout=30)
+            if response.status_code == 200:
+                duplicate = bool((response.json() or {}).get('duplicate'))
+                suffix = '（重复运行已忽略）' if duplicate else ''
+                print(f'[历史] 翻牌记录已保存{suffix}')
+                return True
+            print(f'[历史] 第 {attempt}/3 次上报失败: HTTP {response.status_code}')
+        except requests.exceptions.RequestException as error:
+            print(f'[历史] 第 {attempt}/3 次上报失败: {type(error).__name__}')
+        if attempt < 3:
+            time.sleep(attempt)
+
+    print('[历史] 翻牌记录保存失败')
+    return False
+
+
 def run_gwent_tasks(accounts: list, draw_count: int) -> bool:
     """执行独立的维云翻牌任务。"""
+    started_at = utc_timestamp()
+    run_number = int(os.environ.get('GITHUB_RUN_NUMBER', '0') or 0)
+    run_attempt = int(os.environ.get('GITHUB_RUN_ATTEMPT', '1') or 1)
+    github_run_id = os.environ.get('GITHUB_RUN_ID', '').strip()
+    run_id = f'{github_run_id}:{run_attempt}' if github_run_id else datetime.now().strftime('%Y%m%d%H%M%S')
+    history_events = []
     targets = []
     for index, account in enumerate(accounts, 1):
         client = NewAPICheckin(
@@ -608,6 +675,7 @@ def run_gwent_tasks(accounts: list, draw_count: int) -> bool:
         results = client.gwent_draw_many(draw_count)
         completed = 0
         total_quota = 0
+        account_key = history_account_key(account, index)
         for attempt, result in enumerate(results, 1):
             if result.get('unlock_success'):
                 print(f'  第 {attempt}/{draw_count} 次加成: ✅ {result["unlock_message"]}')
@@ -627,6 +695,26 @@ def run_gwent_tasks(accounts: list, draw_count: int) -> bool:
             elif result.get('unlock_success'):
                 print(f'  第 {attempt}/{draw_count} 次翻牌: ❌ {result["message"]}')
 
+            prize_quota = result.get('prize_quota')
+            quota_value = int(prize_quota) if isinstance(prize_quota, (int, float)) else 0
+            rarity = str(result.get('prize_rarity') or 'unknown').lower()
+            if rarity not in ('common', 'rare', 'epic', 'legendary'):
+                rarity = 'unknown'
+            bonus_percent = result.get('bonus_percent')
+            history_events.append({
+                'event_id': f'{run_id}:{account_key}:{attempt}',
+                'account_key': account_key,
+                'account_name': str(name)[:64],
+                'attempt': attempt,
+                'occurred_at': utc_timestamp(),
+                'status': gwent_event_status(result),
+                'prize_name': str(result.get('prize_name'))[:80] if result.get('prize_name') else None,
+                'prize_quota': max(0, quota_value),
+                'prize_rarity': rarity,
+                'bonus_percent': int(bonus_percent) if isinstance(bonus_percent, (int, float)) else 0,
+                'message': str(result.get('message', ''))[:240] or None,
+            })
+
         if completed == draw_count:
             success_count += 1
             print(f'  小结: ✅ 完成 {completed}/{draw_count} 次，合计 +{total_quota:,} 额度')
@@ -643,7 +731,22 @@ def run_gwent_tasks(accounts: list, draw_count: int) -> bool:
     print('=' * 50)
     print(f'翻牌完成: 全部完成 {success_count}, 未满 {fail_count}, 实际错误 {error_count}')
     print('=' * 50)
-    return error_count != len(targets)
+    finished_at = utc_timestamp()
+    run_status = 'success' if fail_count == 0 else ('error' if error_count == len(targets) else 'partial')
+    history_saved = publish_gwent_history({
+        'schema_version': 1,
+        'run': {
+            'run_id': run_id,
+            'run_number': max(0, run_number),
+            'run_attempt': max(0, run_attempt),
+            'started_at': started_at,
+            'finished_at': finished_at,
+            'planned_draws': draw_count,
+            'status': run_status,
+        },
+        'events': history_events,
+    })
+    return error_count != len(targets) and history_saved
 
 
 def main():
