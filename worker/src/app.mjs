@@ -1828,31 +1828,79 @@ async function dashboardData(env) {
 async function balancesData(env, accountKeys = ["all"]) {
   const settings = await settingsFor(env);
   const accounts = await keyedAccounts(env, accountKeys);
+  const checkedAt = new Date().toISOString();
   const results = await Promise.all(
     accounts.map(async ({ account, key }) => {
-      const result = await getBalance(account);
+      const [result, gwentResult] = await Promise.all([
+        getBalance(account),
+        account.isVsllm ? getGwentStatus(account) : Promise.resolve(null),
+      ]);
       const balanceQuota = Math.max(
         0,
         Number(result?.balance_quota ?? result?.quota_raw ?? result?.quota ?? 0) || 0,
       );
+      const gwentOk = account.isVsllm && okResult(gwentResult);
+      const gwentInteger = (value) =>
+        Number.isSafeInteger(value) && value >= 0 ? value : null;
       return {
         account_key: key,
         account_name: account.name,
         ...result,
         balance_quota: balanceQuota,
         balance_yuan: (balanceQuota / settings.quota_per_cny).toFixed(6),
+        gwent: account.isVsllm
+          ? {
+              supported: true,
+              ok: gwentOk,
+              status: String(gwentResult?.status || (gwentOk ? "success" : "error")),
+              message: String(
+                gwentResult?.message || (gwentOk ? "翻牌状态读取成功" : "翻牌状态读取失败"),
+              ),
+              available: gwentOk ? gwentInteger(gwentResult?.available) : null,
+              charges_current: gwentOk ? gwentInteger(gwentResult?.charges_current) : null,
+              extra_draws_left: gwentOk ? gwentInteger(gwentResult?.extra_draws_left) : null,
+              next_available_at: gwentOk ? gwentInteger(gwentResult?.next_available_at) : null,
+              next_charge_at: gwentOk ? gwentInteger(gwentResult?.next_charge_at) : null,
+              cooldown_seconds: gwentOk ? gwentInteger(gwentResult?.cooldown_seconds) : null,
+              checked_at: checkedAt,
+            }
+          : {
+              supported: false,
+              ok: null,
+              status: "not_applicable",
+              message: "该账号不支持翻牌",
+              available: null,
+              charges_current: null,
+              extra_draws_left: null,
+              next_available_at: null,
+              next_charge_at: null,
+              cooldown_seconds: null,
+              checked_at: checkedAt,
+            },
       };
     }),
   );
   const totalQuota = results
     .filter((result) => okResult(result))
     .reduce((sum, result) => sum + Number(result.balance_quota || 0), 0);
+  const supportedGwent = results.filter((result) => result.gwent.supported);
+  const knownGwent = supportedGwent.filter(
+    (result) => Number.isSafeInteger(result.gwent.available) && result.gwent.available >= 0,
+  );
   return {
+    updated_at: checkedAt,
     total: results.length,
     succeeded: results.filter((result) => okResult(result)).length,
     failed: results.filter((result) => !okResult(result)).length,
     balance_quota: totalQuota,
     balance_yuan: (totalQuota / settings.quota_per_cny).toFixed(6),
+    gwent: {
+      supported: supportedGwent.length,
+      succeeded: supportedGwent.filter((result) => result.gwent.ok === true).length,
+      failed: supportedGwent.filter((result) => result.gwent.ok !== true).length,
+      known: knownGwent.length,
+      available_total: knownGwent.reduce((sum, result) => sum + result.gwent.available, 0),
+    },
     results,
   };
 }

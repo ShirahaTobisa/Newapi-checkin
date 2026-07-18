@@ -157,17 +157,17 @@
       <div class="section-intro">
         <div><p class="eyebrow">ACCOUNTS</p><h1>账号与今日任务</h1><p class="section-note">账号名称与状态均为脱敏数据，不展示 Cookie 或用户令牌。</p></div>
         <button id="refresh-balances-button" class="button button-secondary" type="button">
-          <svg aria-hidden="true" viewBox="0 0 24 24" fill="none"><path d="M3 6h18"/><path d="M7 12h10"/><path d="M10 18h4"/></svg><span>更新账号额度</span>
+          <svg aria-hidden="true" viewBox="0 0 24 24" fill="none"><path d="M3 6h18"/><path d="M7 12h10"/><path d="M10 18h4"/></svg><span>更新账号状态</span>
         </button>
       </div>
 
       <section class="panel balance-panel" aria-labelledby="balances-title">
         <div class="panel-heading table-heading">
-          <div><h2 id="balances-title">账号实时额度</h2><p id="balances-updated" class="panel-note">管理员更新后显示每个账号当前余额</p></div>
+          <div><h2 id="balances-title">账号实时状态</h2><p id="balances-updated" class="panel-note">管理员更新后显示每个账号当前余额与剩余翻牌次数</p></div>
           <strong id="balances-total" class="balance-total" hidden>¥0.0000</strong>
         </div>
         <div id="balance-grid" class="balance-grid" aria-live="polite"></div>
-        <div id="balances-empty" class="empty-state compact"><p>尚未更新账号额度</p></div>
+        <div id="balances-empty" class="empty-state compact"><p>尚未更新账号状态</p></div>
       </section>
 
       <section class="panel accounts-panel" aria-labelledby="accounts-title">

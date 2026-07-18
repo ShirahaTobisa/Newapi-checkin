@@ -426,6 +426,185 @@ test("admin account API is secret-safe and preserves an existing cookie when lef
   assert.equal(stored.accounts[1].session.includes("new-secret"), true);
 });
 
+test("admin balance refresh includes safe draw charges only for VSLLM accounts", async () => {
+  const vsllm = {
+    name: "维云一号",
+    url: "https://vsllm.com",
+    user_id: "sensitive-user-101",
+    session: "session=vsllm-cookie-secret",
+  };
+  const generic = {
+    name: "普通签到站",
+    url: "https://generic.example",
+    user_id: "sensitive-user-202",
+    session: "session=generic-cookie-secret",
+  };
+  const env = envWith({
+    "newapi-config.json": { accounts: [vsllm, generic] },
+    "automation-settings-v1.json": DEFAULT_SETTINGS,
+  });
+  const calls = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, options = {}) => {
+    const value = String(url);
+    const headers = new Headers(options.headers);
+    calls.push({
+      url: value,
+      userId: headers.get("new-api-user"),
+      cookie: headers.get("cookie"),
+    });
+    if (value === "https://vsllm.com/api/user/self") {
+      return responseJson({
+        success: true,
+        data: {
+          quota: 1_000_000,
+          used_quota: 250_000,
+          request_count: 12,
+          raw_secret: "balance-raw-secret",
+        },
+      });
+    }
+    if (value === "https://vsllm.com/api/gwent/status") {
+      return responseJson({
+        success: true,
+        data: {
+          charges_current: 2,
+          extra_draws_left: 1,
+          raw_secret: "gwent-raw-secret",
+          tasks: {},
+        },
+      });
+    }
+    if (value === "https://generic.example/api/user/self") {
+      return responseJson({
+        success: true,
+        data: { quota: 500_000, used_quota: 0, request_count: 3 },
+      });
+    }
+    throw new Error(`Unexpected URL: ${value}`);
+  };
+
+  try {
+    const response = await handleRequest(
+      request("/api/admin/balances", {
+        method: "POST",
+        token: "admin-secret",
+        body: { account_keys: ["all"] },
+      }),
+      env,
+    );
+    assert.equal(response.status, 200);
+    const data = await response.json();
+    assert.equal(data.total, 2);
+    assert.equal(data.succeeded, 2);
+
+    const vsllmResult = data.results.find((result) => result.account_name === "维云一号");
+    assert.equal(vsllmResult.ok, true);
+    assert.equal(vsllmResult.balance_quota, 1_000_000);
+    assert.equal(vsllmResult.gwent.supported, true);
+    assert.equal(vsllmResult.gwent.ok, true);
+    assert.equal(vsllmResult.gwent.available, 3);
+    assert.equal(vsllmResult.gwent.charges_current, 2);
+    assert.equal(vsllmResult.gwent.extra_draws_left, 1);
+
+    const genericResult = data.results.find((result) => result.account_name === "普通签到站");
+    assert.equal(genericResult.ok, true);
+    assert.equal(genericResult.balance_quota, 500_000);
+    assert.equal(genericResult.gwent.supported, false);
+    assert.equal(
+      calls.some((call) => call.url === "https://generic.example/api/gwent/status"),
+      false,
+    );
+    assert.deepEqual(
+      calls.map((call) => [call.url, call.userId, call.cookie]).sort(),
+      [
+        ["https://generic.example/api/user/self", "sensitive-user-202", "session=generic-cookie-secret"],
+        ["https://vsllm.com/api/gwent/status", "sensitive-user-101", "session=vsllm-cookie-secret"],
+        ["https://vsllm.com/api/user/self", "sensitive-user-101", "session=vsllm-cookie-secret"],
+      ].sort(),
+    );
+
+    const serialized = JSON.stringify(data);
+    for (const sensitive of [
+      "sensitive-user-101",
+      "sensitive-user-202",
+      "vsllm-cookie-secret",
+      "generic-cookie-secret",
+      "balance-raw-secret",
+      "gwent-raw-secret",
+    ]) {
+      assert.equal(serialized.includes(sensitive), false, `response leaked ${sensitive}`);
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("admin balance refresh preserves balance when the VSLLM charge lookup fails", async () => {
+  const account = {
+    name: "过期账号",
+    url: "https://vsllm.com",
+    user_id: "sensitive-user-303",
+    session: "session=expired-cookie-secret",
+  };
+  const env = envWith({
+    "newapi-config.json": { accounts: [account] },
+    "automation-settings-v1.json": DEFAULT_SETTINGS,
+  });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const value = String(url);
+    if (value === "https://vsllm.com/api/user/self") {
+      return responseJson({
+        success: true,
+        data: { quota: 750_000, used_quota: 125_000, request_count: 9 },
+      });
+    }
+    if (value === "https://vsllm.com/api/gwent/status") {
+      return responseJson({
+        success: false,
+        message: "授权已过期",
+        data: { raw_secret: "failed-status-raw-secret" },
+      }, 401);
+    }
+    throw new Error(`Unexpected URL: ${value}`);
+  };
+
+  try {
+    const response = await handleRequest(
+      request("/api/admin/balances", {
+        method: "POST",
+        token: "admin-secret",
+        body: { account_keys: ["all"] },
+      }),
+      env,
+    );
+    assert.equal(response.status, 200);
+    const data = await response.json();
+    assert.equal(data.succeeded, 1);
+    assert.equal(data.failed, 0);
+    assert.equal(data.balance_quota, 750_000);
+    assert.equal(data.results[0].ok, true);
+    assert.equal(data.results[0].balance_quota, 750_000);
+    assert.equal(data.results[0].gwent.supported, true);
+    assert.equal(data.results[0].gwent.ok, false);
+    assert.equal(data.results[0].gwent.available, null);
+    assert.equal(data.results[0].gwent.charges_current, null);
+    assert.equal(data.results[0].gwent.extra_draws_left, null);
+
+    const serialized = JSON.stringify(data);
+    for (const sensitive of [
+      "sensitive-user-303",
+      "expired-cookie-secret",
+      "failed-status-raw-secret",
+    ]) {
+      assert.equal(serialized.includes(sensitive), false, `response leaked ${sensitive}`);
+    }
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("dashboard does not reuse yesterday task status and marks removed accounts historical", async () => {
   const active = { name: "当前账号", url: "https://vsllm.com", user_id: "101", session: "cookie-value" };
   const activeKey = await accountKey(active, 1);

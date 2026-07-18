@@ -104,6 +104,14 @@
     return Math.max(0, Math.trunc(safeNumber(value, fallback)));
   }
 
+  function optionalInteger(value) {
+    if (value === null || value === undefined || value === "" || typeof value === "boolean") {
+      return null;
+    }
+    const number = Number(value);
+    return Number.isSafeInteger(number) && number >= 0 ? number : null;
+  }
+
   function quotaPerCny() {
     const value = safeNumber(state.dashboard?.conversion?.quota_per_cny, DEFAULT_QUOTA_PER_CNY);
     return value > 0 ? value : DEFAULT_QUOTA_PER_CNY;
@@ -535,6 +543,47 @@
     return accounts.filter((account) => String(account.account_name || "").toLocaleLowerCase("zh-CN").includes(query));
   }
 
+  function balanceGwentMetric(result) {
+    const metric = element("div", "balance-draws");
+    const gwent = result?.gwent;
+    if (!gwent) {
+      metric.dataset.state = "unknown";
+      metric.append(element("strong", "", "--"));
+      metric.append(element("small", "", "尚未读取剩余次数"));
+      return metric;
+    }
+    if (gwent.supported === false) {
+      metric.dataset.state = "unsupported";
+      metric.append(element("strong", "", "不适用"));
+      metric.append(element("small", "", "普通签到站点"));
+      return metric;
+    }
+    if (gwent.ok !== true) {
+      metric.dataset.state = "error";
+      metric.append(element("strong", "", "读取失败"));
+      metric.append(element("small", "", gwent.message || "无法读取剩余翻牌次数"));
+      return metric;
+    }
+
+    const available = optionalInteger(gwent.available);
+    if (available === null) {
+      metric.dataset.state = "unknown";
+      metric.append(element("strong", "", "--"));
+      metric.append(element("small", "", "上游未返回剩余次数"));
+      return metric;
+    }
+
+    const current = optionalInteger(gwent.charges_current);
+    const extra = optionalInteger(gwent.extra_draws_left);
+    const parts = [];
+    if (current !== null) parts.push(`充能 ${current}`);
+    if (extra !== null) parts.push(`额外 ${extra}`);
+    metric.dataset.state = "available";
+    metric.append(element("strong", "", `${available} 次`));
+    metric.append(element("small", "", parts.length ? parts.join(" + ") : "当前可用翻牌次数"));
+    return metric;
+  }
+
   function renderBalances(payload) {
     const results = Array.isArray(payload?.results) ? payload.results : [];
     const refreshedAt = payload?.updated_at || new Date().toISOString();
@@ -546,16 +595,24 @@
     empty.hidden = results.length > 0;
     total.hidden = results.length === 0;
     total.textContent = formatMoney(payload?.balance_yuan);
-    $("#balances-updated").textContent = `更新于 ${formatFullDateTime(refreshedAt)} · 成功 ${safeInteger(payload?.succeeded)} / ${safeInteger(payload?.total, results.length)} 个`;
+    const gwentSupported = optionalInteger(payload?.gwent?.supported);
+    const gwentSummary = gwentSupported
+      ? ` · 次数 ${safeInteger(payload?.gwent?.succeeded)} / ${gwentSupported} 个账号`
+      : "";
+    $("#balances-updated").textContent = `更新于 ${formatFullDateTime(refreshedAt)} · 额度 ${safeInteger(payload?.succeeded)} / ${safeInteger(payload?.total, results.length)} 个账号${gwentSummary}`;
     if (!results.length) return;
 
     const fragment = document.createDocumentFragment();
     results.forEach((result, index) => {
       const success = result?.ok === true || result?.success === true;
+      const gwentFailed = result?.gwent?.supported === true && result?.gwent?.ok !== true;
       const card = element("article", `balance-item${success ? "" : " is-error"}`);
       const heading = element("div", "balance-item-heading");
-      heading.append(accountIdentity(result, index, success ? "实时额度" : "读取异常"));
-      heading.append(statusChip(success ? "success" : "failed", success ? "已更新" : "失败"));
+      heading.append(accountIdentity(result, index, success ? "实时额度与翻牌次数" : "额度读取异常"));
+      heading.append(statusChip(
+        success ? (gwentFailed ? "partial" : "success") : "failed",
+        success ? (gwentFailed ? "部分更新" : "已更新") : "失败",
+      ));
       const amount = element("div", "balance-amount");
       if (success) {
         amount.append(element("strong", "", formatMoney(result.balance_yuan)));
@@ -564,10 +621,11 @@
         amount.append(element("strong", "", "--"));
         amount.append(element("small", "", result.message || "无法读取额度"));
       }
+      const draws = balanceGwentMetric(result);
       const timestamp = result.updated_at || result.checked_at || refreshedAt;
       const time = element("time", "balance-updated", `更新于 ${formatFullDateTime(timestamp)}`);
       if (validTimestamp(timestamp)) time.dateTime = new Date(timestamp).toISOString();
-      card.append(heading, amount, time);
+      card.append(heading, amount, draws, time);
       fragment.append(card);
     });
     grid.append(fragment);
@@ -1249,8 +1307,13 @@
         body: { account_keys: ["all"] },
       });
       renderBalances(result);
-      showToast(`额度已更新：成功 ${safeInteger(result.succeeded)} 个，失败 ${safeInteger(result.failed)} 个，合计 ${formatMoney(result.balance_yuan)}`,
-        safeInteger(result.failed) > 0 ? "warning" : "success");
+      const gwentSupported = safeInteger(result.gwent?.supported);
+      const gwentText = gwentSupported
+        ? `；翻牌次数已读取 ${safeInteger(result.gwent?.succeeded)} / ${gwentSupported} 个账号，已知剩余 ${safeInteger(result.gwent?.available_total)} 次`
+        : "";
+      const partial = safeInteger(result.failed) > 0 || safeInteger(result.gwent?.failed) > 0;
+      showToast(`账号状态已更新：额度成功 ${safeInteger(result.succeeded)} 个，合计 ${formatMoney(result.balance_yuan)}${gwentText}`,
+        partial ? "warning" : "success");
     } catch (error) {
       if (error.status === 401 || error.status === 403) {
         clearAdminSession("管理员会话已失效，请重新登录");

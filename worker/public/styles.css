@@ -794,6 +794,7 @@ h2 {
 .task-income strong,
 .run-amount,
 .balance-amount strong,
+.balance-draws strong,
 .money-primary,
 .balance-total {
   font-family: ui-monospace, "SFMono-Regular", "Cascadia Mono", Consolas, monospace;
@@ -809,6 +810,7 @@ h2 {
 .run-meta small,
 .money-secondary,
 .balance-amount small,
+.balance-draws small,
 .balance-updated {
   color: var(--text-muted);
   font-size: 10px;
@@ -1072,7 +1074,7 @@ h2 {
   min-height: 58px;
   padding: 7px 0;
   display: grid;
-  grid-template-columns: minmax(220px, 1fr) minmax(120px, auto) minmax(150px, auto);
+  grid-template-columns: minmax(210px, 1fr) minmax(115px, auto) minmax(140px, auto) minmax(150px, auto);
   align-items: center;
   gap: 14px;
   border-bottom: 1px solid #eceef1;
@@ -1090,10 +1092,29 @@ h2 {
   gap: 10px;
 }
 
-.balance-amount {
+.balance-amount,
+.balance-draws {
   min-width: 0;
   display: grid;
   text-align: right;
+}
+
+.balance-draws[data-state="available"] strong {
+  color: var(--blue);
+}
+
+.balance-draws[data-state="error"] strong {
+  color: var(--red);
+}
+
+.balance-draws[data-state="unsupported"] strong,
+.balance-draws[data-state="unknown"] strong {
+  color: var(--text-secondary);
+}
+
+.balance-draws small {
+  max-width: 210px;
+  overflow-wrap: anywhere;
 }
 
 .balance-updated {
@@ -1940,7 +1961,12 @@ input[type="radio"] {
     text-align: left;
   }
 
+  .balance-draws {
+    text-align: right;
+  }
+
   .balance-updated {
+    grid-column: 1 / -1;
     align-self: end;
   }
 

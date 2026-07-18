@@ -37,6 +37,10 @@ test("dashboard retains the Worker data and admin DOM contracts", async () => {
     "overview-event-list",
     "trend-chart",
     "account-table-body",
+    "refresh-balances-button",
+    "balances-updated",
+    "balances-total",
+    "balance-grid",
     "event-table-body",
     "events-pagination",
     "settings-form",
@@ -67,6 +71,20 @@ test("manual task state survives refreshes and hidden draw count cannot block ot
   assert.doesNotThrow(() => new Function(script));
   assert.match(script, /if \(!\$\("#manual-dialog"\)\.open\) populateManualAccounts\(\);/u);
   assert.match(script, /drawCountInput\.disabled = action !== "draw";/u);
+});
+
+test("balance refresh keeps zero, unknown, failed, and unsupported draw chances distinct", async () => {
+  const [html, script] = await Promise.all([asset("index.html"), asset("app.js")]);
+
+  assert.match(html, /账号实时状态/u);
+  assert.match(html, /当前余额与剩余翻牌次数/u);
+  assert.match(script, /function optionalInteger\(value\)/u);
+  assert.match(script, /if \(available === null\)/u);
+  assert.match(script, /`\$\{available\} 次`/u);
+  assert.match(script, /尚未读取剩余次数/u);
+  assert.match(script, /gwent\.supported === false/u);
+  assert.match(script, /读取失败/u);
+  assert.match(script, /普通签到站点/u);
 });
 
 test("account configuration uses the same light visual system", async () => {

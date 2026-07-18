@@ -242,6 +242,26 @@ test("getGwentStatus exposes only normalized charges and task state", async () =
   assert.doesNotMatch(JSON.stringify(result), /hidden|not-public/u);
 });
 
+test("getGwentStatus distinguishes zero remaining draws from missing charge fields", async () => {
+  const mock = queuedFetch([
+    jsonResponse(statusPayload({ charges_current: 0, extra_draws_left: 0 })),
+    jsonResponse({ success: true, data: { tasks: {} } }),
+  ]);
+
+  const zero = await getGwentStatus(existingAccount, { fetch: mock.fetch });
+  assert.equal(zero.ok, true);
+  assert.equal(zero.available, 0);
+  assert.equal(zero.charges_current, 0);
+  assert.equal(zero.extra_draws_left, 0);
+
+  const unknown = await getGwentStatus(existingAccount, { fetch: mock.fetch });
+  assert.equal(unknown.ok, true);
+  assert.equal(unknown.available, null);
+  assert.equal(unknown.charges_current, null);
+  assert.equal(unknown.extra_draws_left, null);
+  assert.equal(mock.remaining(), 0);
+});
+
 test("unlockAndDraw activates share bonus before one draw and parses the prize", async () => {
   const mock = queuedFetch([
     jsonResponse({ success: true, message: "50% 加成已激活" }),
