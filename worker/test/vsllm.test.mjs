@@ -117,6 +117,39 @@ test("generic check-in uses safe headers and returns only allowlisted data", asy
   assert.equal(mock.calls[0].url, "https://api.example.com/api/user/checkin");
 });
 
+test("check-in treats explicit already-completed messages as a successful skip", async () => {
+  for (const message of [
+    "今日已签到",
+    "您已经签到过了，请勿重复签到",
+    "You have already checked in today.",
+    "Already checked-in for today",
+  ]) {
+    const mock = queuedFetch([
+      jsonResponse({ success: false, message }),
+    ]);
+
+    const result = await checkinAccount(existingAccount, { fetch: mock.fetch });
+    assert.equal(result.ok, true, message);
+    assert.equal(result.success, true, message);
+    assert.equal(result.skipped, true, message);
+    assert.equal(result.completed, true, message);
+    assert.equal(result.status, "completed", message);
+    assert.equal(result.http_status, 200, message);
+    assert.equal(mock.calls.length, 1, message);
+  }
+});
+
+test("check-in keeps unrelated HTTP 200 failures as errors", async () => {
+  const mock = queuedFetch([
+    jsonResponse({ success: false, message: "签到失败，请稍后重试" }),
+  ]);
+
+  const result = await checkinAccount(existingAccount, { fetch: mock.fetch });
+  assert.equal(result.ok, false);
+  assert.equal(result.success, false);
+  assert.equal(result.status, "error");
+});
+
 test("bounded response parsing rejects oversized bodies without exposing them", async () => {
   const secretBody = JSON.stringify({ success: true, data: "secret".repeat(400) });
   const mock = queuedFetch([

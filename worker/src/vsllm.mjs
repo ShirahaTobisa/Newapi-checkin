@@ -420,12 +420,26 @@ function successfulPayload(result, { allowMissingSuccess = false } = {}) {
   return result.payload.success === true || (allowMissingSuccess && result.payload.success !== false);
 }
 
+function alreadyCheckedInMessage(value) {
+  const message = String(value ?? "").normalize("NFKC").toLowerCase();
+  return (
+    /已(?:经)?\s*签到(?:过)?/u.test(message) ||
+    /\balready[\s-]+check(?:ed)?[\s-]+in\b/u.test(message)
+  );
+}
+
 export async function checkinAccount(accountInput, options = {}) {
   const prepared = operationAccount(accountInput);
   if (prepared.error) return prepared.error;
   const account = prepared.account;
   const result = await apiRequest(account, "/api/user/checkin", { method: "POST" }, options);
-  if (!successfulPayload(result)) {
+  const alreadyCheckedIn =
+    result.received &&
+    result.response_ok &&
+    !result.parse_error &&
+    result.payload &&
+    alreadyCheckedInMessage(result.payload.message);
+  if (!successfulPayload(result) && !alreadyCheckedIn) {
     return endpointFailure(result, account, "签到失败", { uncertainTransport: !result.received });
   }
   const data = result.payload.data && typeof result.payload.data === "object" ? result.payload.data : {};
@@ -433,7 +447,8 @@ export async function checkinAccount(accountInput, options = {}) {
   return {
     ok: true,
     success: true,
-    status: "success",
+    ...(alreadyCheckedIn ? { skipped: true, completed: true } : {}),
+    status: alreadyCheckedIn ? "completed" : "success",
     http_status: result.http_status,
     message: apiMessage(result, account, "签到成功"),
     checkin_date: /^\d{4}-\d{2}-\d{2}$/u.test(checkinDate) ? checkinDate : null,
