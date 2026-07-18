@@ -226,9 +226,9 @@ function optionNumber(options, name, fallback, minimum, maximum) {
 }
 
 function fetchImplementation(options) {
-  const implementation = options?.fetch ?? globalThis.fetch;
-  if (typeof implementation !== "function") throw new TypeError("fetch 不可用");
-  return implementation;
+  if (typeof options?.fetch === "function") return options.fetch;
+  if (typeof globalThis.fetch !== "function") throw new TypeError("fetch 不可用");
+  return globalThis.fetch.bind(globalThis);
 }
 
 function requestHeaders(account) {

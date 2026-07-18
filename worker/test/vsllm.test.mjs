@@ -152,6 +152,23 @@ test("getBalance keeps raw quota and converts 500000 quota to one yuan", async (
   assert.equal(result.request_count, 9);
 });
 
+test("global fetch keeps the Cloudflare Workers receiver", async () => {
+  const originalFetch = globalThis.fetch;
+  let receiver;
+  globalThis.fetch = async function fetchWithReceiver() {
+    receiver = this;
+    return jsonResponse({ success: true, data: { quota: 500000 } });
+  };
+
+  try {
+    const result = await getBalance(existingAccount);
+    assert.equal(result.ok, true);
+    assert.equal(receiver, globalThis);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("getGwentStatus exposes only normalized charges and task state", async () => {
   const mock = queuedFetch([
     jsonResponse(statusPayload({
