@@ -16,6 +16,15 @@
     minute: "2-digit",
     hour12: false,
   });
+  const fullDateTimeFormat = new Intl.DateTimeFormat("zh-CN", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
   const beijingDateFormat = new Intl.DateTimeFormat("en-CA", {
     timeZone: "Asia/Shanghai",
     year: "numeric",
@@ -96,16 +105,16 @@
   }
 
   function taskStatusMeta(status, currentDate) {
-    if (!currentDate) return { style: "idle", label: "待今日检查" };
+    if (!currentDate) return { style: "idle", label: "待今日检查", icon: "calendar-clock" };
     return ({
-      completed: { style: "success", label: "已完成" },
-      available: { style: "idle", label: "可执行" },
-      cooldown: { style: "cooldown", label: "冷却中" },
-      pending: { style: "idle", label: "待执行" },
-      suspended: { style: "stale", label: "已暂停" },
-      error: { style: "error", label: "异常" },
-      unknown: { style: "idle", label: "待检查" },
-    })[status] || { style: "idle", label: "待检查" };
+      completed: { style: "success", label: "已完成", icon: "circle-check" },
+      available: { style: "idle", label: "可执行", icon: "play" },
+      cooldown: { style: "cooldown", label: "冷却中", icon: "clock-3" },
+      pending: { style: "idle", label: "待执行", icon: "circle-dashed" },
+      suspended: { style: "stale", label: "已暂停", icon: "circle-pause" },
+      error: { style: "error", label: "异常", icon: "circle-alert" },
+      unknown: { style: "idle", label: "待检查", icon: "circle-help" },
+    })[status] || { style: "idle", label: "待检查", icon: "circle-help" };
   }
 
   function createTaskBadge(item, currentDate) {
@@ -113,7 +122,12 @@
     const meta = taskStatusMeta(status, currentDate);
     const badge = document.createElement("span");
     badge.className = `status-badge status-${meta.style}`;
-    badge.textContent = meta.label;
+    const icon = document.createElement("i");
+    icon.dataset.lucide = meta.icon;
+    icon.setAttribute("aria-hidden", "true");
+    const label = document.createElement("span");
+    label.textContent = meta.label;
+    badge.append(icon, label);
     if (item?.message) badge.title = item.message;
     return badge;
   }
@@ -124,8 +138,31 @@
     if (Number.isFinite(parsed)) {
       element.dateTime = new Date(parsed).toISOString();
       element.textContent = formatDateTime(value);
+      element.title = fullDateTimeFormat.format(new Date(parsed)).replace("24:", "00:");
     } else {
       element.textContent = fallback;
+    }
+    return element;
+  }
+
+  function formatRelativeTime(value, now = Date.now()) {
+    const parsed = value ? Date.parse(value) : NaN;
+    if (!Number.isFinite(parsed)) return "--";
+    const elapsed = Math.max(0, now - parsed);
+    const minutes = Math.floor(elapsed / 60_000);
+    if (minutes < 1) return "刚刚";
+    if (minutes < 60) return `${minutes} 分钟前`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return `${hours} 小时前`;
+    const days = Math.floor(hours / 24);
+    if (days < 7) return `${days} 天前`;
+    return formatDateTime(value);
+  }
+
+  function taskUpdatedElement(value) {
+    const element = taskTimeElement(value);
+    if (value && Number.isFinite(Date.parse(value))) {
+      element.textContent = formatRelativeTime(value);
     }
     return element;
   }
@@ -364,7 +401,7 @@
       const updatedCell = document.createElement("td");
       updatedCell.dataset.label = "更新时间";
       updatedCell.className = "task-time";
-      updatedCell.append(taskTimeElement(latestTimestamp(account.quiz?.checked_at, account.ad?.checked_at)));
+      updatedCell.append(taskUpdatedElement(latestTimestamp(account.quiz?.checked_at, account.ad?.checked_at)));
       updatedCell.setAttribute("aria-label", `更新时间：${updatedCell.textContent}`);
 
       row.append(nameCell, quizCell, progressCell, adCell, nextCell, updatedCell);

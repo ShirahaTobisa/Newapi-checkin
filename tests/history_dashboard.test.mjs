@@ -64,12 +64,27 @@ test("dashboard renders daily quiz and video status without carrying yesterday f
   assert.match(script, /formatToParts/u);
   assert.match(script, /payload\.local_date === today/u);
   assert.match(script, /待今日检查/u);
-  assert.match(script, /completed:\s*\{ style: "success", label: "已完成" \}/u);
-  assert.match(script, /cooldown:\s*\{ style: "cooldown", label: "冷却中" \}/u);
+  assert.match(script, /completed:\s*\{ style: "success", label: "已完成", icon: "circle-check" \}/u);
+  assert.match(script, /cooldown:\s*\{ style: "cooldown", label: "冷却中", icon: "clock-3" \}/u);
+  assert.match(script, /icon:\s*"circle-check"/u);
+  assert.match(script, /icon\.dataset\.lucide = meta\.icon/u);
   assert.match(script, /taskTimeElement/u);
   assert.match(script, /setAttribute\("aria-label"/u);
   assert.match(script, /Number\.isFinite\(Number\(adStatus\.done_count\)\)/u);
   assert.doesNotMatch(css, /task-status-table thead\s*\{\s*display:\s*none/u);
+});
+
+test("task updates use relative time with exact timestamp metadata", () => {
+  const start = script.indexOf("  function formatRelativeTime");
+  const end = script.indexOf("\n\n  function taskUpdatedElement", start);
+  assert.ok(start >= 0 && end > start);
+  const formatRelativeTime = new Function(
+    `${script.slice(start, end)}\nreturn formatRelativeTime;`,
+  )();
+  const now = Date.parse("2026-07-18T06:00:00Z");
+  assert.equal(formatRelativeTime("2026-07-18T05:57:00Z", now), "3 分钟前");
+  assert.equal(formatRelativeTime("2026-07-18T04:00:00Z", now), "2 小时前");
+  assert.match(script, /element\.title = fullDateTimeFormat\.format/u);
 });
 
 test("expired video cooldown is presented as available", () => {
@@ -106,9 +121,11 @@ test("manual draw control delegates confirmation to GitHub Actions without brows
   assert.match(html, /Run workflow/u);
   assert.match(html, /每账号 1 次/u);
   assert.match(html, /先激活 50% 加成/u);
+  assert.match(html, /前往 GitHub 手动运行/u);
   assert.match(html, /不会改变下一次整点任务/u);
   assert.match(html, /不会读取或保存 Cookie、Token/u);
   assert.match(css, /\.action-button\s*\{[^}]*min-height:\s*44px/su);
+  assert.match(css, /@media \(max-width: 430px\)[\s\S]*task-status-table tr \{ grid-template-columns: 1fr; \}/u);
   assert.doesNotMatch(html + script, /ACTIONS_TOKEN|localStorage|sessionStorage/u);
 });
 
