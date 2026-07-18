@@ -15,7 +15,7 @@ test("quiz and ad workflows use the intended Beijing schedules", () => {
   assert.match(ad, /vsllm_tasks\.py --task ad/u);
 });
 
-test("all VSLLM workflows share serialization and publish redacted task-draw history", () => {
+test("all VSLLM workflows share serialization and publish redacted draws and daily status", () => {
   for (const workflow of [quiz, ad, checkin, gwent]) {
     assert.match(workflow, /group:\s*vsllm-tasks-\$\{\{ github\.repository \}\}/u);
   }
@@ -32,7 +32,12 @@ test("all VSLLM workflows share serialization and publish redacted task-draw his
   assert.doesNotMatch(runner, /ACCOUNTS_JSON/u);
   assert.match(runner, /gwent_draw\(/u);
   assert.match(runner, /publish_gwent_history/u);
+  assert.match(runner, /publish_task_status/u);
+  assert.match(runner, /\/task-status/u);
+  assert.match(runner, /beijing_local_date/u);
   assert.match(runner, /task_type/u);
+  assert.match(runner, /done_count/u);
+  assert.match(runner, /daily_cap/u);
 });
 
 test("task runner keeps unknown quiz responses fail-closed", () => {

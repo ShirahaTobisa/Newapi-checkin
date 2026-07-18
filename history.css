@@ -306,6 +306,14 @@ select:focus-visible {
   align-items: stretch;
 }
 
+.operations-grid {
+  margin-top: 12px;
+  display: grid;
+  grid-template-columns: minmax(0, 1.62fr) minmax(300px, 0.78fr);
+  gap: 12px;
+  align-items: stretch;
+}
+
 .side-stack {
   min-width: 0;
   display: grid;
@@ -441,6 +449,162 @@ tbody tr:hover td { background: #f8f9fa; }
 .status-error { color: var(--red); background: var(--red-soft); }
 .status-idle,
 .status-running { color: var(--blue); background: var(--blue-soft); }
+
+.task-status-table { min-width: 720px; }
+
+.task-status-table td {
+  height: 44px;
+}
+
+.task-status-table .account-name {
+  min-width: 112px;
+}
+
+.task-progress {
+  min-width: 78px;
+  display: inline-grid;
+  grid-template-columns: minmax(42px, 1fr) auto;
+  align-items: center;
+  gap: 7px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.task-progress-track {
+  height: 5px;
+  overflow: hidden;
+  background: var(--surface-alt);
+  border-radius: 3px;
+}
+
+.task-progress-track span {
+  display: block;
+  height: 100%;
+  background: var(--blue);
+  border-radius: inherit;
+}
+
+.task-time {
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.task-status-footer {
+  padding-top: 8px;
+}
+
+.manual-draw-panel {
+  display: flex;
+  flex-direction: column;
+}
+
+.manual-draw-heading {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.manual-draw-icon {
+  width: 34px;
+  height: 34px;
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  color: var(--blue);
+  background: var(--blue-soft);
+  border-radius: 6px;
+}
+
+.manual-draw-icon svg,
+.manual-draw-facts svg,
+.manual-draw-security svg,
+.action-button svg {
+  width: 16px;
+  height: 16px;
+  stroke-width: 1.8;
+}
+
+.manual-draw-copy {
+  margin: 12px 0;
+  color: var(--text-secondary);
+  line-height: 1.65;
+}
+
+.manual-draw-copy strong {
+  color: var(--text);
+  font-weight: 650;
+}
+
+.manual-draw-facts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.manual-draw-facts span {
+  min-height: 32px;
+  padding: 6px 8px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-secondary);
+  background: var(--surface-alt);
+  border-radius: 5px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.action-button {
+  min-height: 44px;
+  margin-top: 14px;
+  padding: 8px 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  color: #fff;
+  background: var(--blue);
+  border: 1px solid var(--blue);
+  border-radius: 6px;
+  font-weight: 650;
+  text-decoration: none;
+  transition: background-color 150ms ease, border-color 150ms ease;
+}
+
+.manual-draw-warning {
+  margin: 10px 0 0;
+  padding: 8px 9px;
+  color: var(--amber);
+  background: var(--amber-soft);
+  border-radius: 5px;
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.action-button:hover {
+  background: #185abc;
+  border-color: #185abc;
+}
+
+.manual-draw-security {
+  margin: auto 0 0;
+  padding-top: 12px;
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.manual-draw-security svg {
+  margin-top: 1px;
+  flex: 0 0 auto;
+  color: var(--green);
+}
 
 .rarity-common { color: var(--text-secondary); background: var(--surface-alt); }
 .rarity-rare { color: var(--blue); background: var(--blue-soft); }
@@ -641,6 +805,7 @@ tbody tr:hover td { background: #f8f9fa; }
 @media (max-width: 1024px) {
   .kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .primary-grid { grid-template-columns: 1fr; }
+  .operations-grid { grid-template-columns: 1fr; }
   .side-stack { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: none; }
 }
 
@@ -668,6 +833,52 @@ tbody tr:hover td { background: #f8f9fa; }
   .trend-chart { gap: 4px; padding-inline: 0; }
   .trend-label { font-size: 9px; }
   .panel-footer { align-items: flex-start; flex-direction: column; gap: 2px; }
+  .task-status-table { min-width: 0; white-space: normal; }
+  .task-status-table thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+  .task-status-table tbody { display: grid; gap: 8px; }
+  .task-status-table tr {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    column-gap: 14px;
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+  }
+  .task-status-table td {
+    min-width: 0;
+    height: auto;
+    min-height: 34px;
+    padding: 7px 0;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    border-bottom: 1px solid #eceef1;
+  }
+  .task-status-table td::before {
+    content: attr(data-label);
+    color: var(--text-muted);
+    font-size: 10px;
+    font-weight: 650;
+  }
+  .task-status-table td:first-child {
+    grid-column: 1 / -1;
+    padding-top: 3px;
+  }
+  .task-status-table td:first-child::before { display: none; }
+  .task-status-table td:nth-last-child(-n + 2) { border-bottom: 0; }
+  .task-status-table tbody tr:hover td { background: transparent; }
+  .task-progress { min-width: 86px; }
 }
 
 @media (max-width: 430px) {

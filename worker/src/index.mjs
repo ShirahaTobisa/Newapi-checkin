@@ -1,22 +1,66 @@
 const CONFIG_API_PATH = "/api/config";
 const HISTORY_API_PATH = "/api/gwent/history";
 const SCHEDULE_API_PATH = "/api/gwent/schedule";
+const TASK_STATUS_API_PATH = "/api/gwent/task-status";
 const UPSTREAM_ORIGIN = "https://dav.jianguoyun.com";
 const DEFAULT_CONFIG_PATH = "/dav/newapi-config.json";
 const KV_CONFIG_KEY = "newapi-config.json";
 const KV_HISTORY_KEY = "gwent-history-v1.json";
 const KV_SCHEDULE_KEY = "gwent-schedule-v1.json";
+const KV_TASK_STATUS_KEYS = Object.freeze({
+  quiz: "gwent-task-status-quiz-v1.json",
+  ad: "gwent-task-status-ad-v1.json",
+});
 const MAX_BODY_BYTES = 256 * 1024;
 const MAX_HISTORY_EVENTS = 500;
 const MAX_HISTORY_RUNS = 120;
 const MAX_HISTORY_DAYS = 90;
 const MAX_EVENTS_PER_RUN = 100;
+const MAX_TASK_STATUS_ACCOUNTS = 100;
 const HISTORY_SOURCES = new Set(["gwent", "quiz", "ad"]);
+const TASK_STATUS_SOURCES = new Set(["quiz", "ad"]);
+const TASK_STATUS_VALUES = new Set([
+  "completed",
+  "available",
+  "cooldown",
+  "pending",
+  "suspended",
+  "error",
+  "unknown",
+]);
+const TASK_STATUS_PAYLOAD_FIELDS = new Set([
+  "schema_version",
+  "local_date",
+  "updated_at",
+  "source",
+  "accounts",
+]);
+const TASK_STATUS_ACCOUNT_FIELDS = new Set([
+  "account_key",
+  "account_name",
+  "task_type",
+  "status",
+  "completed",
+  "done_count",
+  "daily_cap",
+  "next_available_at",
+  "message",
+  "checked_at",
+]);
+const STORED_TASK_STATUS_FIELDS = new Set([
+  "schema_version",
+  "source",
+  "local_date",
+  "updated_at",
+  "accounts",
+]);
 const DEFAULT_GWENT_INTERVAL_SECONDS = 2 * 60 * 60;
 const MAX_GWENT_INTERVAL_SECONDS = 7 * 24 * 60 * 60;
 const GWENT_LEASE_SECONDS = 15 * 60;
 const MAX_SCHEDULE_TOKEN_LENGTH = 128;
 const SENSITIVE_HISTORY_FIELD = /(?:authorization|cf_clearance|cookie|password|session|token)/iu;
+const SENSITIVE_TASK_STATUS_FIELD =
+  /(?:authorization|cf_clearance|cookie|password|session|token)/iu;
 
 class HttpError extends Error {
   constructor(status, code, message, details, headers) {
@@ -905,6 +949,443 @@ function beijingDate(timestamp) {
   }).format(new Date(timestamp));
 }
 
+function emptyTaskStatuses(source) {
+  return {
+    schema_version: 1,
+    source,
+    local_date: null,
+    updated_at: null,
+    accounts: [],
+  };
+}
+
+function containsSensitiveTaskStatusField(value) {
+  if (Array.isArray(value)) {
+    return value.some((item) => containsSensitiveTaskStatusField(item));
+  }
+  if (value === null || typeof value !== "object") {
+    return false;
+  }
+  return Object.entries(value).some(
+    ([key, item]) =>
+      SENSITIVE_TASK_STATUS_FIELD.test(key) || containsSensitiveTaskStatusField(item),
+  );
+}
+
+function taskStatusFailure(status, name, message) {
+  throw new HttpError(
+    status,
+    status === 400 ? "invalid_task_status" : "task_status_corrupt",
+    message || `${name} is invalid.`,
+  );
+}
+
+function assertTaskStatusFields(value, allowed, name, status = 400) {
+  for (const key of Object.keys(value)) {
+    if (!allowed.has(key)) {
+      taskStatusFailure(status, `${name}.${key}`, `${name}.${key} is not supported.`);
+    }
+  }
+}
+
+function taskStatusString(value, name, maxLength, status = 400, pattern) {
+  if (
+    typeof value !== "string" ||
+    value.length === 0 ||
+    value.length > maxLength ||
+    value.trim().length === 0 ||
+    /[\u0000-\u001f\u007f]/u.test(value) ||
+    (pattern && !pattern.test(value))
+  ) {
+    taskStatusFailure(status, name);
+  }
+  return value;
+}
+
+function optionalTaskStatusString(value, name, maxLength, status = 400) {
+  if (value === undefined || value === null || value === "") {
+    return null;
+  }
+  return taskStatusString(value, name, maxLength, status);
+}
+
+function taskStatusLocalDate(value, name = "local_date", status = 400) {
+  const localDate = taskStatusString(value, name, 10, status, /^\d{4}-\d{2}-\d{2}$/u);
+  const parsed = new Date(`${localDate}T00:00:00Z`);
+  if (!Number.isFinite(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== localDate) {
+    taskStatusFailure(status, name);
+  }
+  return localDate;
+}
+
+function taskStatusTimestamp(value, name, status = 400) {
+  const timestamp = taskStatusString(
+    value,
+    name,
+    40,
+    status,
+    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|\+00:00)$/u,
+  );
+  if (!Number.isFinite(Date.parse(timestamp))) {
+    taskStatusFailure(status, name);
+  }
+  return timestamp;
+}
+
+function taskStatusInteger(value, name, minimum, maximum, status = 400) {
+  if (!Number.isSafeInteger(value) || value < minimum || value > maximum) {
+    taskStatusFailure(status, name);
+  }
+  return value;
+}
+
+function normalizeTaskStatusAccount(account, index, expectedSource, status = 400) {
+  const name = `accounts[${index}]`;
+  if (!account || typeof account !== "object" || Array.isArray(account)) {
+    taskStatusFailure(status, name);
+  }
+  assertTaskStatusFields(account, TASK_STATUS_ACCOUNT_FIELDS, name, status);
+
+  const taskType = taskStatusString(account.task_type, `${name}.task_type`, 16, status);
+  if (!TASK_STATUS_SOURCES.has(taskType) || (expectedSource && taskType !== expectedSource)) {
+    taskStatusFailure(status, `${name}.task_type`);
+  }
+  const taskState = taskStatusString(account.status, `${name}.status`, 16, status);
+  if (!TASK_STATUS_VALUES.has(taskState)) {
+    taskStatusFailure(status, `${name}.status`);
+  }
+  if (typeof account.completed !== "boolean") {
+    taskStatusFailure(status, `${name}.completed`);
+  }
+
+  const normalized = {
+    account_key: taskStatusString(
+      account.account_key,
+      `${name}.account_key`,
+      32,
+      status,
+      /^[a-f0-9]{16,32}$/u,
+    ),
+    account_name: taskStatusString(account.account_name, `${name}.account_name`, 64, status),
+    task_type: taskType,
+    status: taskState,
+    completed: account.completed,
+    next_available_at:
+      account.next_available_at === undefined || account.next_available_at === null
+        ? null
+        : taskStatusTimestamp(account.next_available_at, `${name}.next_available_at`, status),
+    message: optionalTaskStatusString(account.message, `${name}.message`, 180, status),
+    checked_at: taskStatusTimestamp(account.checked_at, `${name}.checked_at`, status),
+  };
+
+  if (Object.prototype.hasOwnProperty.call(account, "done_count")) {
+    normalized.done_count = taskStatusInteger(
+      account.done_count,
+      `${name}.done_count`,
+      0,
+      3,
+      status,
+    );
+  }
+  if (Object.prototype.hasOwnProperty.call(account, "daily_cap")) {
+    normalized.daily_cap = taskStatusInteger(
+      account.daily_cap,
+      `${name}.daily_cap`,
+      1,
+      3,
+      status,
+    );
+  }
+  if (
+    normalized.done_count !== undefined &&
+    normalized.daily_cap !== undefined &&
+    normalized.done_count > normalized.daily_cap
+  ) {
+    taskStatusFailure(status, `${name}.done_count`, `${name}.done_count exceeds daily_cap.`);
+  }
+
+  return normalized;
+}
+
+function normalizeTaskStatusPayload(payload) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    taskStatusFailure(400, "payload", "Task status payload must be an object.");
+  }
+  if (containsSensitiveTaskStatusField(payload)) {
+    throw new HttpError(
+      400,
+      "sensitive_task_status_field",
+      "Task status payload contains a sensitive field.",
+    );
+  }
+  assertTaskStatusFields(payload, TASK_STATUS_PAYLOAD_FIELDS, "payload");
+  if (payload.schema_version !== 1) {
+    taskStatusFailure(400, "schema_version");
+  }
+  const source = taskStatusString(payload.source, "source", 16);
+  if (!TASK_STATUS_SOURCES.has(source)) {
+    taskStatusFailure(400, "source");
+  }
+  if (!Array.isArray(payload.accounts) || payload.accounts.length > MAX_TASK_STATUS_ACCOUNTS) {
+    taskStatusFailure(
+      400,
+      "accounts",
+      `accounts must contain at most ${MAX_TASK_STATUS_ACCOUNTS} items.`,
+    );
+  }
+
+  const accounts = payload.accounts.map((account, index) =>
+    normalizeTaskStatusAccount(account, index, source),
+  );
+  const accountKeys = new Set();
+  for (const account of accounts) {
+    if (accountKeys.has(account.account_key)) {
+      taskStatusFailure(400, "accounts", "accounts contains a duplicate account_key.");
+    }
+    accountKeys.add(account.account_key);
+  }
+
+  return {
+    schema_version: 1,
+    local_date: taskStatusLocalDate(payload.local_date),
+    updated_at: taskStatusTimestamp(payload.updated_at, "updated_at"),
+    source,
+    accounts,
+  };
+}
+
+function newestTimestamp(...values) {
+  let latest = null;
+  let latestMs = Number.NEGATIVE_INFINITY;
+  for (const value of values) {
+    if (typeof value !== "string") continue;
+    const timestampMs = Date.parse(value);
+    if (Number.isFinite(timestampMs) && timestampMs > latestMs) {
+      latest = value;
+      latestMs = timestampMs;
+    }
+  }
+  return latest;
+}
+
+function normalizeStoredTaskStatuses(value, expectedSource) {
+  if (!value || typeof value !== "object" || Array.isArray(value) || value.schema_version !== 1) {
+    return emptyTaskStatuses(expectedSource);
+  }
+  if (containsSensitiveTaskStatusField(value)) {
+    taskStatusFailure(500, "stored task status", "Stored task status contains a sensitive field.");
+  }
+  assertTaskStatusFields(value, STORED_TASK_STATUS_FIELDS, "stored task status", 500);
+
+  if (value.source !== expectedSource) {
+    taskStatusFailure(500, "stored task status.source");
+  }
+
+  if (value.local_date === null || value.local_date === undefined) {
+    if (
+      (value.updated_at !== null && value.updated_at !== undefined) ||
+      (Array.isArray(value.accounts) && value.accounts.length > 0)
+    ) {
+      taskStatusFailure(500, "stored task status");
+    }
+    return emptyTaskStatuses(expectedSource);
+  }
+  if (!Array.isArray(value.accounts) || value.accounts.length > MAX_TASK_STATUS_ACCOUNTS) {
+    taskStatusFailure(500, "stored task status.accounts");
+  }
+
+  const localDate = taskStatusLocalDate(value.local_date, "stored task status.local_date", 500);
+  const updatedAt = taskStatusTimestamp(value.updated_at, "stored task status.updated_at", 500);
+  const accounts = value.accounts.map((account, index) =>
+    normalizeTaskStatusAccount(account, index, expectedSource, 500),
+  );
+  const accountKeys = new Set();
+  for (const account of accounts) {
+    if (accountKeys.has(account.account_key)) {
+      taskStatusFailure(500, "stored task status.accounts", "Stored task status has duplicates.");
+    }
+    accountKeys.add(account.account_key);
+  }
+
+  return {
+    schema_version: 1,
+    source: expectedSource,
+    local_date: localDate,
+    updated_at: newestTimestamp(updatedAt, ...accounts.map((account) => account.checked_at)),
+    accounts,
+  };
+}
+
+async function readTaskStatuses(env, source) {
+  const key = KV_TASK_STATUS_KEYS[source];
+  if (!key) {
+    taskStatusFailure(500, "task status source");
+  }
+  const value = await env.CONFIG_KV.get(key);
+  if (value === null) {
+    return emptyTaskStatuses(source);
+  }
+  try {
+    return normalizeStoredTaskStatuses(JSON.parse(value), source);
+  } catch (error) {
+    if (error instanceof HttpError) throw error;
+    throw new HttpError(500, "task_status_corrupt", "Stored task status is not valid JSON.");
+  }
+}
+
+async function writeTaskStatuses(env, source, state) {
+  const serialized = JSON.stringify(state);
+  if (new TextEncoder().encode(serialized).byteLength > MAX_BODY_BYTES) {
+    throw new HttpError(500, "task_status_too_large", "Stored task status exceeds the size limit.");
+  }
+  await env.CONFIG_KV.put(KV_TASK_STATUS_KEYS[source], serialized);
+}
+
+function mergeTaskStatuses(current, input) {
+  if (current.local_date !== null && input.local_date < current.local_date) {
+    return {
+      state: current,
+      changed: false,
+      stale: true,
+      ignored_count: input.accounts.length,
+    };
+  }
+
+  if (current.local_date === null || input.local_date > current.local_date) {
+    const state = {
+      schema_version: 1,
+      source: input.source,
+      local_date: input.local_date,
+      updated_at: newestTimestamp(
+        input.updated_at,
+        ...input.accounts.map((account) => account.checked_at),
+      ),
+      accounts: [...input.accounts].sort((left, right) =>
+        left.account_name.localeCompare(right.account_name, "zh-CN"),
+      ),
+    };
+    return { state, changed: true, stale: false, ignored_count: 0 };
+  }
+
+  const accounts = new Map(
+    current.accounts.map((account) => [account.account_key, account]),
+  );
+  let acceptedCount = 0;
+  let ignoredCount = 0;
+  for (const account of input.accounts) {
+    const previous = accounts.get(account.account_key);
+    if (
+      previous !== undefined &&
+      Date.parse(account.checked_at) < Date.parse(previous.checked_at)
+    ) {
+      ignoredCount += 1;
+      continue;
+    }
+    accounts.set(account.account_key, account);
+    acceptedCount += 1;
+  }
+
+  if (acceptedCount === 0) {
+    return {
+      state: current,
+      changed: false,
+      stale: ignoredCount > 0,
+      ignored_count: ignoredCount,
+    };
+  }
+
+  const mergedAccounts = [...accounts.values()].sort((left, right) =>
+    left.account_name.localeCompare(right.account_name, "zh-CN"),
+  );
+  return {
+    state: {
+      schema_version: 1,
+      source: input.source,
+      local_date: current.local_date,
+      updated_at: newestTimestamp(
+        current.updated_at,
+        input.updated_at,
+        ...mergedAccounts.map((account) => account.checked_at),
+      ),
+      accounts: mergedAccounts,
+    },
+    changed: true,
+    stale: ignoredCount > 0,
+    ignored_count: ignoredCount,
+  };
+}
+
+function publicTaskStatuses(states) {
+  const localDate = states.reduce(
+    (latest, state) =>
+      state.local_date !== null && (latest === null || state.local_date > latest)
+        ? state.local_date
+        : latest,
+    null,
+  );
+  if (localDate === null) {
+    return { local_date: null, updated_at: null, accounts: [] };
+  }
+
+  const currentStates = states.filter((state) => state.local_date === localDate);
+  const accounts = currentStates
+    .flatMap((state) => state.accounts)
+    .sort(
+      (left, right) =>
+        left.account_name.localeCompare(right.account_name, "zh-CN") ||
+        left.task_type.localeCompare(right.task_type),
+    );
+  return {
+    local_date: localDate,
+    updated_at: newestTimestamp(...currentStates.map((state) => state.updated_at)),
+    accounts,
+  };
+}
+
+async function handleTaskStatus(request, env, corsOrigin) {
+  if (
+    !env.CONFIG_KV ||
+    typeof env.CONFIG_KV.get !== "function" ||
+    typeof env.CONFIG_KV.put !== "function"
+  ) {
+    throw new HttpError(500, "worker_not_configured", "CONFIG_KV is not configured.");
+  }
+
+  const actionsToken = requiredSecret(env, "ACTIONS_TOKEN");
+  requireBearerToken(request, [actionsToken]);
+  const body = await readLimitedBody(request);
+  let payload;
+  try {
+    payload = JSON.parse(new TextDecoder().decode(body));
+  } catch {
+    throw new HttpError(400, "invalid_json", "Task status payload must be valid JSON.");
+  }
+
+  const input = normalizeTaskStatusPayload(payload);
+  const current = await readTaskStatuses(env, input.source);
+  const { state, changed, stale, ignored_count: ignoredCount } = mergeTaskStatuses(
+    current,
+    input,
+  );
+  if (changed) {
+    await writeTaskStatuses(env, input.source, state);
+  }
+  return jsonResponse(
+    {
+      success: true,
+      stored: changed,
+      stale,
+      source: input.source,
+      local_date: state.local_date,
+      updated_at: state.updated_at,
+      account_count: state.accounts.length,
+      ignored_count: ignoredCount,
+    },
+    200,
+    corsOrigin,
+  );
+}
+
 async function readHistory(env) {
   const value = await env.CONFIG_KV.get(KV_HISTORY_KEY);
   if (value === null) {
@@ -1010,7 +1491,21 @@ async function handleHistory(request, env, corsOrigin) {
     throw new HttpError(500, "worker_not_configured", "CONFIG_KV is not configured.");
   }
   if (request.method === "GET") {
-    return jsonResponse(await readHistory(env), 200, corsOrigin);
+    const [history, quizStatuses, adStatuses] = await Promise.all([
+      readHistory(env),
+      readTaskStatuses(env, "quiz"),
+      readTaskStatuses(env, "ad"),
+    ]);
+    const taskStatuses = publicTaskStatuses([quizStatuses, adStatuses]);
+    return jsonResponse(
+      {
+        ...history,
+        updated_at: newestTimestamp(history.updated_at, taskStatuses.updated_at),
+        task_statuses: taskStatuses,
+      },
+      200,
+      corsOrigin,
+    );
   }
 
   const actionsToken = requiredSecret(env, "ACTIONS_TOKEN");
@@ -1041,7 +1536,14 @@ export async function handleRequest(request, env = {}, upstreamFetch) {
 
   try {
     const url = new URL(request.url);
-    if (![CONFIG_API_PATH, HISTORY_API_PATH, SCHEDULE_API_PATH].includes(url.pathname)) {
+    if (
+      ![
+        CONFIG_API_PATH,
+        HISTORY_API_PATH,
+        SCHEDULE_API_PATH,
+        TASK_STATUS_API_PATH,
+      ].includes(url.pathname)
+    ) {
       throw new HttpError(404, "not_found", "Endpoint not found.");
     }
 
@@ -1083,6 +1585,32 @@ export async function handleRequest(request, env = {}, upstreamFetch) {
         );
       }
       return await handleSchedule(request, env, corsOrigin);
+    }
+
+    if (url.pathname === TASK_STATUS_API_PATH) {
+      if (request.method === "OPTIONS") {
+        const requestedMethod = request.headers.get("Access-Control-Request-Method");
+        if (requestedMethod !== null && requestedMethod.toUpperCase() !== "POST") {
+          throw new HttpError(
+            405,
+            "method_not_allowed",
+            "Only POST may be preflighted.",
+            undefined,
+            { Allow: "POST, OPTIONS" },
+          );
+        }
+        return optionsResponse(corsOrigin, ["POST", "OPTIONS"]);
+      }
+      if (request.method !== "POST") {
+        throw new HttpError(
+          405,
+          "method_not_allowed",
+          "Only POST and OPTIONS are supported.",
+          undefined,
+          { Allow: "POST, OPTIONS" },
+        );
+      }
+      return await handleTaskStatus(request, env, corsOrigin);
     }
 
     if (request.method === "OPTIONS") {

@@ -1,5 +1,6 @@
 import unittest
 from contextlib import redirect_stdout
+from datetime import datetime, timezone
 from io import StringIO
 from unittest.mock import Mock, patch
 
@@ -7,11 +8,14 @@ from checkin import NewAPICheckin
 from vsllm_tasks import (
     _ad_account,
     _api_request,
+    _history_event,
     _publish_task_draws,
     _quiz_account,
     answer_quiz_until_correct,
+    beijing_local_date,
     choose_known_quiz_answer,
     draw_one_after_reward,
+    publish_task_status,
     run_task,
     task_status,
 )
@@ -96,6 +100,111 @@ class VsllmTaskTest(unittest.TestCase):
         self.assertIsNone(task)
         self.assertIn("task2", error)
 
+    def test_beijing_local_date_rolls_over_at_utc_16(self):
+        now = datetime(2026, 7, 17, 16, 1, tzinfo=timezone.utc)
+        self.assertEqual(beijing_local_date(now), "2026-07-18")
+
+    def test_publish_task_status_derives_url_and_uses_bearer_auth(self):
+        payload = {
+            "schema_version": 1,
+            "local_date": "2026-07-18",
+            "updated_at": "2026-07-18T00:00:00Z",
+            "source": "quiz",
+            "accounts": [],
+        }
+        with (
+            patch.dict("os.environ", {
+                "HISTORY_URL": "https://relay.example/api/gwent/history",
+                "HISTORY_AUTH": "token:history-secret",
+                "HISTORY_REQUIRED": "true",
+            }, clear=True),
+            patch("vsllm_tasks.requests.post", return_value=FakeResponse({"success": True})) as post,
+        ):
+            saved = publish_task_status(payload)
+
+        self.assertTrue(saved)
+        self.assertEqual(post.call_args.args[0], "https://relay.example/api/gwent/task-status")
+        self.assertEqual(post.call_args.kwargs["headers"]["Authorization"], "Bearer history-secret")
+        self.assertEqual(post.call_args.kwargs["json"], payload)
+
+    def test_required_task_status_publish_failure_is_reported(self):
+        with (
+            patch.dict("os.environ", {
+                "TASK_STATUS_URL": "https://relay.example/api/gwent/task-status",
+                "HISTORY_AUTH": "history-secret",
+                "HISTORY_REQUIRED": "true",
+            }, clear=True),
+            patch("vsllm_tasks.requests.post", return_value=FakeResponse({}, 503)) as post,
+            patch("vsllm_tasks.time.sleep"),
+        ):
+            saved = publish_task_status({"schema_version": 1})
+
+        self.assertFalse(saved)
+        self.assertEqual(post.call_count, 3)
+
+    def test_optional_task_status_publish_failure_does_not_fail_task(self):
+        with (
+            patch.dict("os.environ", {
+                "TASK_STATUS_URL": "https://relay.example/api/gwent/task-status",
+                "HISTORY_AUTH": "history-secret",
+                "HISTORY_REQUIRED": "false",
+            }, clear=True),
+            patch("vsllm_tasks.requests.post", return_value=FakeResponse({}, 503)),
+            patch("vsllm_tasks.time.sleep"),
+        ):
+            self.assertTrue(publish_task_status({"schema_version": 1}))
+
+    def test_quiz_completed_check_produces_completed_snapshot(self):
+        account = {"url": "https://vsllm.com", "session": "session", "user_id": "1", "name": "账号1"}
+        client = Mock()
+        events = []
+        with patch("vsllm_tasks.task_status", return_value=({"status": "completed"}, None)):
+            result = _quiz_account(1, account, client, events, "quiz:1:1")
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["skipped"])
+        self.assertEqual(result["task_status"]["status"], "completed")
+        self.assertTrue(result["task_status"]["completed"])
+        self.assertEqual(events, [])
+
+    def test_quiz_status_error_produces_error_snapshot(self):
+        account = {"url": "https://vsllm.com", "session": "session", "user_id": "1", "name": "账号1"}
+        with patch("vsllm_tasks.task_status", return_value=(None, "读取任务状态失败")):
+            result = _quiz_account(1, account, Mock(), [], "quiz:1:1")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["task_status"]["status"], "error")
+        self.assertFalse(result["task_status"]["completed"])
+
+    def test_task_snapshot_redacts_sensitive_account_name(self):
+        account = {
+            "url": "https://vsllm.com",
+            "session": "session",
+            "user_id": "1",
+            "name": "cookie=must-not-escape",
+        }
+        with patch("vsllm_tasks.task_status", return_value=(None, "读取任务状态失败")):
+            result = _quiz_account(1, account, Mock(), [], "quiz:1:1")
+
+        self.assertNotIn("must-not-escape", result["task_status"]["account_name"])
+
+    def test_history_event_redacts_sensitive_account_name(self):
+        account = {
+            "url": "https://vsllm.com",
+            "user_id": "1",
+            "name": "cookie=must-not-escape",
+        }
+        event = _history_event("quiz", "quiz:1:1", 1, account, {
+            "status": "success",
+            "message": "翻牌成功",
+            "prize_name": "测试卡",
+            "prize_quota": 10,
+            "prize_rarity": "common",
+            "bonus_percent": 50,
+        })
+        self.assertNotIn("must-not-escape", event["account_name"])
+        self.assertEqual(event["account_name"], "cookie=***")
+
     def test_draw_after_reward_calls_gwent_draw_exactly_once(self):
         client = Mock()
         client.gwent_draw.return_value = {
@@ -164,6 +273,8 @@ class VsllmTaskTest(unittest.TestCase):
         self.assertEqual(events[0]["task_type"], "quiz")
         self.assertEqual(events[0]["status"], "success")
         self.assertEqual(events[0]["prize_quota"], 10)
+        self.assertEqual(result["task_status"]["status"], "completed")
+        self.assertTrue(result["task_status"]["completed"])
         self.assertEqual([call[1].rsplit("/api/gwent", 1)[-1] for call in session.calls], [
             "/status",
             "/task3/start",
@@ -190,6 +301,8 @@ class VsllmTaskTest(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertEqual(events[0]["status"], "cooldown")
         self.assertEqual(events[0]["task_type"], "quiz")
+        self.assertEqual(result["task_status"]["status"], "completed")
+        self.assertTrue(result["task_status"]["completed"])
         client.gwent_draw.assert_called_once_with()
 
     def test_ad_reward_is_followed_by_one_bonus_draw(self):
@@ -198,6 +311,10 @@ class VsllmTaskTest(unittest.TestCase):
                 FakeResponse({
                     "success": True,
                     "data": {"tasks": {"task2": {"done_count": 0, "daily_cap": 3, "next_available_at": 0}}},
+                }),
+                FakeResponse({
+                    "success": True,
+                    "data": {"tasks": {"task2": {"done_count": 1, "daily_cap": 3, "next_available_at": 2_000_000_000}}},
                 }),
             ],
             posts=[
@@ -226,7 +343,11 @@ class VsllmTaskTest(unittest.TestCase):
             "/ad/claim",
             "/share_unlock",
             "/draw",
+            "/status",
         ])
+        self.assertEqual(result["task_status"]["status"], "cooldown")
+        self.assertEqual(result["task_status"]["done_count"], 1)
+        self.assertEqual(result["task_status"]["daily_cap"], 3)
 
     def test_ad_daily_cap_is_hard_limited_to_three(self):
         account = {"url": "https://vsllm.com", "session": "session", "user_id": "1", "name": "账号1"}
@@ -240,8 +361,60 @@ class VsllmTaskTest(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertTrue(result["skipped"])
         self.assertEqual(result["reason"], "daily_cap_reached")
+        self.assertEqual(result["task_status"]["status"], "completed")
+        self.assertEqual(result["task_status"]["done_count"], 3)
+        self.assertEqual(result["task_status"]["daily_cap"], 3)
         self.assertEqual(events, [])
         client.gwent_draw.assert_not_called()
+
+    def test_ad_cooldown_check_produces_count_and_iso_timestamp(self):
+        account = {"url": "https://vsllm.com", "session": "session", "user_id": "1", "name": "账号1"}
+        task = {"done_count": 1, "daily_cap": 3, "next_available_at": 2_000}
+        with (
+            patch("vsllm_tasks.task_status", return_value=(task, None)),
+            patch("vsllm_tasks.time.time", return_value=1_000),
+        ):
+            result = _ad_account(1, account, Mock(), [], "ad:1:1")
+
+        snapshot = result["task_status"]
+        self.assertTrue(result["skipped"])
+        self.assertEqual(snapshot["status"], "cooldown")
+        self.assertEqual(snapshot["done_count"], 1)
+        self.assertEqual(snapshot["daily_cap"], 3)
+        self.assertEqual(snapshot["next_available_at"], "1970-01-01T00:33:20Z")
+
+    def test_ad_claim_uses_response_count_when_status_refresh_fails(self):
+        account = {"url": "https://vsllm.com", "session": "session", "user_id": "1", "name": "账号1"}
+        client = Mock()
+        client.gwent_draw.return_value = {
+            "success": True,
+            "message": "翻牌成功",
+            "prize_name": "奖励卡",
+            "prize_quota": 20,
+        }
+        initial = {"done_count": 1, "daily_cap": 3, "next_available_at": 0}
+        api_results = [
+            {"ok": True, "data": {"data": {"duration_sec": 1}}},
+            {
+                "ok": True,
+                "data": {"data": {"done_count": 2, "daily_cap": 3, "next_available_at": 2_000}},
+            },
+        ]
+        events = []
+        with (
+            patch("vsllm_tasks.task_status", side_effect=[(initial, None), (None, "刷新失败")]),
+            patch("vsllm_tasks._api_request", side_effect=api_results),
+            patch("vsllm_tasks.time.sleep"),
+            patch("vsllm_tasks.time.time", return_value=1_000),
+        ):
+            result = _ad_account(1, account, client, events, "ad:1:1")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["task_status"]["status"], "cooldown")
+        self.assertEqual(result["task_status"]["done_count"], 2)
+        self.assertEqual(result["task_status"]["daily_cap"], 3)
+        self.assertEqual(len(events), 1)
+        client.gwent_draw.assert_called_once_with()
 
     def test_ad_status_missing_required_fields_fails_without_starting(self):
         account = {"url": "https://vsllm.com", "session": "session", "user_id": "1", "name": "账号1"}
@@ -250,6 +423,7 @@ class VsllmTaskTest(unittest.TestCase):
             events = []
             result = _ad_account(1, account, client, events, "ad:1:1")
         self.assertFalse(result["ok"])
+        self.assertEqual(result["task_status"]["status"], "error")
         client.session.post.assert_not_called()
 
     def test_api_log_does_not_include_response_body(self):
@@ -325,6 +499,83 @@ class VsllmTaskTest(unittest.TestCase):
         self.assertFalse(result)
         self.assertEqual(publish.call_count, 1)
         self.assertEqual(publish.call_args.args[0]["events"][0]["status"], "error")
+
+    def test_run_task_publishes_status_even_when_history_has_no_draw(self):
+        account = {"url": "https://vsllm.com", "session": "session", "user_id": "1", "name": "账号1"}
+
+        def completed_runner(_index, _account, _client, _events, _run_id):
+            return {
+                "ok": True,
+                "skipped": True,
+                "reason": "quiz_completed",
+                "task_status": {
+                    "account_key": "safe-key",
+                    "account_name": "账号1",
+                    "task_type": "quiz",
+                    "status": "completed",
+                    "completed": True,
+                    "checked_at": "2026-07-18T00:00:00Z",
+                },
+            }
+
+        with (
+            patch("vsllm_tasks._load_accounts", return_value=[account]),
+            patch("vsllm_tasks._quiz_account", side_effect=completed_runner),
+            patch("vsllm_tasks.publish_gwent_history") as history,
+            patch("vsllm_tasks.publish_task_status", return_value=True) as publish_status,
+            patch("vsllm_tasks.beijing_local_date", return_value="2026-07-18"),
+        ):
+            result = run_task("quiz")
+
+        self.assertTrue(result)
+        history.assert_not_called()
+        payload = publish_status.call_args.args[0]
+        self.assertEqual(payload["schema_version"], 1)
+        self.assertEqual(payload["local_date"], "2026-07-18")
+        self.assertEqual(payload["source"], "quiz")
+        self.assertEqual(payload["accounts"][0]["status"], "completed")
+
+    def test_required_status_failure_fails_run_after_draw_history_is_saved(self):
+        account = {"url": "https://vsllm.com", "session": "session", "user_id": "1", "name": "账号1"}
+
+        def successful_runner(_index, _account, _client, events, _run_id):
+            events.append({
+                "event_id": "quiz:1:1:key:1",
+                "account_key": "key",
+                "account_name": "账号1",
+                "attempt": 1,
+                "occurred_at": "2026-07-18T00:00:00Z",
+                "status": "success",
+                "prize_name": "奖励卡",
+                "prize_quota": 10,
+                "prize_rarity": "rare",
+                "bonus_percent": 50,
+                "message": "翻牌成功",
+                "task_type": "quiz",
+            })
+            return {
+                "ok": True,
+                "task_status": {
+                    "account_key": "key",
+                    "account_name": "账号1",
+                    "task_type": "quiz",
+                    "status": "completed",
+                    "completed": True,
+                    "checked_at": "2026-07-18T00:00:00Z",
+                },
+            }
+
+        with (
+            patch("vsllm_tasks._load_accounts", return_value=[account]),
+            patch("vsllm_tasks._quiz_account", side_effect=successful_runner),
+            patch("vsllm_tasks.publish_gwent_history", return_value=True) as history,
+            patch("vsllm_tasks.publish_task_status", return_value=False) as publish_status,
+        ):
+            result = run_task("quiz")
+
+        self.assertFalse(result)
+        history.assert_called_once()
+        publish_status.assert_called_once()
 
 
 if __name__ == "__main__":

@@ -16,6 +16,12 @@
     minute: "2-digit",
     hour12: false,
   });
+  const beijingDateFormat = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
   const state = { data: null, loading: false };
 
   const byId = (id) => document.getElementById(id);
@@ -80,6 +86,73 @@
       quiz: "答题",
       ad: "视频",
     })[taskType || "gwent"] || "其他";
+  }
+
+  function beijingDateKey(now = new Date()) {
+    const parts = Object.fromEntries(
+      beijingDateFormat.formatToParts(now).map((part) => [part.type, part.value]),
+    );
+    return `${parts.year}-${parts.month}-${parts.day}`;
+  }
+
+  function taskStatusMeta(status, currentDate) {
+    if (!currentDate) return { style: "idle", label: "待今日检查" };
+    return ({
+      completed: { style: "success", label: "已完成" },
+      available: { style: "idle", label: "可执行" },
+      cooldown: { style: "cooldown", label: "冷却中" },
+      pending: { style: "idle", label: "待执行" },
+      suspended: { style: "stale", label: "已暂停" },
+      error: { style: "error", label: "异常" },
+      unknown: { style: "idle", label: "待检查" },
+    })[status] || { style: "idle", label: "待检查" };
+  }
+
+  function createTaskBadge(item, currentDate) {
+    const status = item?.completed ? "completed" : item?.status;
+    const meta = taskStatusMeta(status, currentDate);
+    const badge = document.createElement("span");
+    badge.className = `status-badge status-${meta.style}`;
+    badge.textContent = meta.label;
+    if (item?.message) badge.title = item.message;
+    return badge;
+  }
+
+  function taskTimeElement(value, fallback = "--") {
+    const element = document.createElement("time");
+    const parsed = value ? Date.parse(value) : NaN;
+    if (Number.isFinite(parsed)) {
+      element.dateTime = new Date(parsed).toISOString();
+      element.textContent = formatDateTime(value);
+    } else {
+      element.textContent = fallback;
+    }
+    return element;
+  }
+
+  function latestTimestamp(...values) {
+    const valid = values
+      .filter((value) => value && Number.isFinite(Date.parse(value)))
+      .sort((left, right) => Date.parse(right) - Date.parse(left));
+    return valid[0] || null;
+  }
+
+  function effectiveAdStatus(item, currentDate, now = Date.now()) {
+    if (
+      currentDate &&
+      item?.status === "cooldown" &&
+      !item.completed &&
+      Number.isFinite(Date.parse(item.next_available_at)) &&
+      Date.parse(item.next_available_at) <= now
+    ) {
+      return {
+        ...item,
+        status: "available",
+        next_available_at: null,
+        message: "视频冷却已结束，等待下一次任务检查",
+      };
+    }
+    return item;
   }
 
   function renderIcons() {
@@ -169,6 +242,132 @@
       const statusCell = document.createElement("td");
       statusCell.append(createStatusBadge(account.last_status));
       row.append(statusCell);
+      fragment.append(row);
+    });
+    tbody.append(fragment);
+  }
+
+  function renderTaskStatuses(taskStatuses) {
+    const payload = taskStatuses && typeof taskStatuses === "object"
+      ? taskStatuses
+      : { local_date: null, updated_at: null, accounts: [] };
+    const entries = Array.isArray(payload.accounts) ? payload.accounts : [];
+    const today = beijingDateKey();
+    const currentDate = payload.local_date === today;
+    const tbody = byId("task-status-body");
+    const empty = byId("task-status-empty");
+    const wrap = byId("task-status-table-wrap");
+    tbody.replaceChildren();
+
+    if (!payload.local_date) {
+      setText("task-status-date", "等待首次上报");
+    } else if (currentDate) {
+      setText("task-status-date", `今日 ${payload.local_date}`);
+    } else {
+      setText("task-status-date", `最近 ${payload.local_date} · 待今日检查`);
+    }
+
+    const accounts = new Map();
+    entries.forEach((item) => {
+      if (!item || typeof item.account_key !== "string") return;
+      const existing = accounts.get(item.account_key) || {
+        account_key: item.account_key,
+        account_name: item.account_name || "未知账号",
+        quiz: null,
+        ad: null,
+      };
+      if (item.account_name) existing.account_name = item.account_name;
+      if (item.task_type === "quiz" || item.task_type === "ad") {
+        const previous = existing[item.task_type];
+        if (!previous || Date.parse(item.checked_at || 0) >= Date.parse(previous.checked_at || 0)) {
+          existing[item.task_type] = item;
+        }
+      }
+      accounts.set(item.account_key, existing);
+    });
+
+    const rows = [...accounts.values()].sort((left, right) =>
+      String(left.account_name).localeCompare(String(right.account_name), "zh-CN"),
+    );
+    empty.hidden = rows.length > 0;
+    wrap.hidden = rows.length === 0;
+    if (!rows.length) return;
+
+    const fragment = document.createDocumentFragment();
+    rows.forEach((account, index) => {
+      const row = document.createElement("tr");
+      const adStatus = effectiveAdStatus(account.ad, currentDate);
+
+      const nameCell = document.createElement("td");
+      nameCell.dataset.label = "账号";
+      const name = document.createElement("span");
+      name.className = "account-name";
+      const accountIndex = document.createElement("span");
+      accountIndex.className = "account-index";
+      accountIndex.textContent = String(index + 1);
+      const accountText = document.createElement("span");
+      accountText.textContent = account.account_name;
+      name.append(accountIndex, accountText);
+      nameCell.append(name);
+      nameCell.setAttribute("aria-label", `账号：${account.account_name}`);
+
+      const quizCell = document.createElement("td");
+      quizCell.dataset.label = "答题";
+      const quizBadge = createTaskBadge(account.quiz, currentDate);
+      quizCell.append(quizBadge);
+      quizCell.setAttribute("aria-label", `答题：${quizBadge.textContent}`);
+
+      const progressCell = document.createElement("td");
+      progressCell.dataset.label = "视频进度";
+      progressCell.className = "number-cell";
+      const hasAdCount = adStatus && Number.isFinite(Number(adStatus.done_count));
+      if (currentDate && hasAdCount) {
+        const cap = Math.max(1, Math.min(3, Math.trunc(safeNumber(adStatus.daily_cap) || 3)));
+        const done = Math.max(0, Math.min(cap, Math.trunc(safeNumber(adStatus.done_count))));
+        const progress = document.createElement("span");
+        progress.className = "task-progress";
+        const track = document.createElement("span");
+        track.className = "task-progress-track";
+        const fill = document.createElement("span");
+        fill.style.width = `${(done / cap) * 100}%`;
+        track.append(fill);
+        const value = document.createElement("span");
+        value.textContent = `${done}/${cap}`;
+        progress.append(track, value);
+        progressCell.append(progress);
+        progressCell.setAttribute("aria-label", `视频进度：${done}/${cap}`);
+      } else {
+        progressCell.textContent = "--";
+        progressCell.setAttribute("aria-label", "视频进度：待检查");
+      }
+
+      const adCell = document.createElement("td");
+      adCell.dataset.label = "视频状态";
+      const adBadge = createTaskBadge(adStatus, currentDate);
+      adCell.append(adBadge);
+      adCell.setAttribute("aria-label", `视频状态：${adBadge.textContent}`);
+
+      const nextCell = document.createElement("td");
+      nextCell.dataset.label = "下次可看";
+      nextCell.className = "task-time";
+      if (!currentDate || !adStatus) {
+        nextCell.append(taskTimeElement(null));
+      } else if (adStatus.completed || adStatus.status === "completed") {
+        nextCell.append(taskTimeElement(null, "今日完成"));
+      } else if (adStatus.status === "available") {
+        nextCell.append(taskTimeElement(null, "现在"));
+      } else {
+        nextCell.append(taskTimeElement(adStatus.next_available_at));
+      }
+      nextCell.setAttribute("aria-label", `下次可看：${nextCell.textContent}`);
+
+      const updatedCell = document.createElement("td");
+      updatedCell.dataset.label = "更新时间";
+      updatedCell.className = "task-time";
+      updatedCell.append(taskTimeElement(latestTimestamp(account.quiz?.checked_at, account.ad?.checked_at)));
+      updatedCell.setAttribute("aria-label", `更新时间：${updatedCell.textContent}`);
+
+      row.append(nameCell, quizCell, progressCell, adCell, nextCell, updatedCell);
       fragment.append(row);
     });
     tbody.append(fragment);
@@ -350,6 +549,7 @@
     updateFreshness(data.updated_at);
     renderMetrics(data);
     renderAccounts(data.accounts || []);
+    renderTaskStatuses(data.task_statuses);
     renderSchedule(data.runs || []);
     renderPrizes(data.prizes || []);
     renderTrend(data.daily || []);
@@ -382,6 +582,7 @@
         events: [],
         runs: [],
         daily: [],
+        task_statuses: { local_date: null, updated_at: null, accounts: [] },
       });
     } finally {
       setLoading(false);

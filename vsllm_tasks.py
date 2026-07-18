@@ -2,7 +2,8 @@
 # -*- coding: utf-8 -*-
 """维云答题和广告任务。
 
-答题或广告奖励领取成功后立即翻牌一次，并把每次翻牌尝试写入历史记录。
+答题或广告奖励领取成功后立即翻牌一次，把每次翻牌尝试写入历史记录，
+并上报每个账号的北京时间每日任务状态。
 """
 
 from __future__ import annotations
@@ -13,8 +14,9 @@ import math
 import os
 import re
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Optional
+from urllib.parse import urlsplit, urlunsplit
 
 import requests
 
@@ -36,6 +38,7 @@ DEFAULT_AD_DURATION_SECONDS = 15
 MAX_AD_DURATION_SECONDS = 120
 TASK_TYPES = ("quiz", "ad")
 _SAFE_MESSAGE_RE = re.compile(r"\s+", re.UNICODE)
+BEIJING_TIMEZONE = timezone(timedelta(hours=8))
 
 
 def _safe_int(value: Any, *, minimum: int = 0, maximum: int = 2**53 - 1) -> Optional[int]:
@@ -67,6 +70,58 @@ def _response_payload(response: Any) -> dict:
     except (AttributeError, ValueError, TypeError, json.JSONDecodeError):
         return {}
     return payload if isinstance(payload, dict) else {}
+
+
+def beijing_local_date(now: Optional[datetime] = None) -> str:
+    """返回任务看板使用的北京时间日期。"""
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    return current.astimezone(BEIJING_TIMEZONE).date().isoformat()
+
+
+def _task_status_url() -> str:
+    explicit = os.environ.get("TASK_STATUS_URL", "").strip()
+    if explicit:
+        return explicit
+    history_url = os.environ.get("HISTORY_URL", "").strip()
+    if not history_url:
+        return ""
+    parsed = urlsplit(history_url)
+    path = re.sub(r"/history/?$", "/task-status", parsed.path)
+    if path == parsed.path:
+        path = f"{parsed.path.rstrip('/')}/task-status"
+    return urlunsplit((parsed.scheme, parsed.netloc, path, parsed.query, parsed.fragment))
+
+
+def publish_task_status(payload: dict) -> bool:
+    """把脱敏后的账号每日任务状态发布到 Worker。"""
+    status_url = _task_status_url()
+    history_auth = os.environ.get("HISTORY_AUTH", "").strip()
+    required = os.environ.get("HISTORY_REQUIRED", "").strip().lower() == "true"
+    if not status_url or not history_auth:
+        print("[任务状态] 未配置 TASK_STATUS_URL/HISTORY_URL 或 HISTORY_AUTH，跳过状态上报")
+        return not required
+
+    token = history_auth[6:] if history_auth.startswith("token:") else history_auth
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    }
+    for attempt in range(1, 4):
+        try:
+            response = requests.post(status_url, headers=headers, json=payload, timeout=30)
+            if response.status_code == 200:
+                print("[任务状态] 每日状态已保存")
+                return True
+            print(f"[任务状态] 第 {attempt}/3 次上报失败: HTTP {response.status_code}")
+        except requests.exceptions.RequestException as error:
+            print(f"[任务状态] 第 {attempt}/3 次上报失败: {type(error).__name__}")
+        if attempt < 3:
+            time.sleep(attempt)
+
+    print("[任务状态] 每日状态保存失败")
+    return not required
 
 
 def _api_request(
@@ -320,7 +375,7 @@ def _history_event(
     return {
         "event_id": f"{run_id}:{account_key}:1",
         "account_key": account_key,
-        "account_name": str(account.get("name") or f"账号{index}")[:64],
+        "account_name": _safe_account_name(account, index),
         "attempt": 1,
         "occurred_at": utc_timestamp(),
         "status": draw.get("status", "error"),
@@ -389,85 +444,271 @@ def _run_identity(task_type: str) -> tuple[str, int, int]:
     return f"{task_type}:{run_id}:{run_attempt}", run_number, run_attempt
 
 
+def _safe_account_name(account: dict, index: int) -> str:
+    return (_safe_message(account.get("name"), f"账号{index}") or f"账号{index}")[:64]
+
+
+def _task_snapshot(
+    task_type: str,
+    index: int,
+    account: dict,
+    status: str,
+    *,
+    completed: bool = False,
+    message: str = "",
+    done_count: Optional[int] = None,
+    daily_cap: Optional[int] = None,
+    next_available_at: Optional[str] = None,
+) -> dict:
+    snapshot = {
+        "account_key": history_account_key(account, index),
+        "account_name": _safe_account_name(account, index),
+        "task_type": task_type,
+        "status": status if status in {
+            "completed", "available", "cooldown", "pending", "suspended", "error", "unknown",
+        } else "unknown",
+        "completed": bool(completed),
+        "checked_at": utc_timestamp(),
+    }
+    safe_message = _safe_message(message)
+    if safe_message:
+        snapshot["message"] = safe_message
+    if task_type == "ad":
+        if done_count is not None:
+            snapshot["done_count"] = min(3, max(0, int(done_count)))
+        if daily_cap is not None:
+            snapshot["daily_cap"] = min(3, max(1, int(daily_cap)))
+        snapshot["next_available_at"] = next_available_at
+    return snapshot
+
+
+def _next_available_epoch(value: Any) -> Optional[int]:
+    if value in (None, ""):
+        return 0
+    number = _safe_int(value, minimum=0)
+    if number is not None:
+        return number // 1000 if number > 10**11 else number
+    if not isinstance(value, str):
+        return None
+    timestamp = value.strip()
+    if timestamp.endswith("Z"):
+        timestamp = f"{timestamp[:-1]}+00:00"
+    try:
+        parsed = datetime.fromisoformat(timestamp)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return max(0, int(parsed.timestamp()))
+
+
+def _epoch_timestamp(value: Optional[int]) -> Optional[str]:
+    if value is None or value <= 0:
+        return None
+    try:
+        return datetime.fromtimestamp(value, timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+def _task_from_api_result(result: dict, task_key: str) -> Optional[dict]:
+    payload = result.get("data")
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(data, dict):
+        return None
+    tasks = data.get("tasks")
+    candidates = [
+        tasks.get(task_key) if isinstance(tasks, dict) else None,
+        data.get(task_key),
+        data.get("task"),
+        data,
+    ]
+    expected = {"status", "suspended", "done_count", "daily_cap", "next_available_at"}
+    return next(
+        (candidate for candidate in candidates if isinstance(candidate, dict) and expected.intersection(candidate)),
+        None,
+    )
+
+
+def _ad_values(task: dict) -> tuple[Optional[int], int, Optional[int]]:
+    done_count = _safe_int(task.get("done_count"))
+    server_daily_cap = _safe_int(task.get("daily_cap"), minimum=1) or 3
+    daily_cap = min(server_daily_cap, 3)
+    next_available = _next_available_epoch(task.get("next_available_at", 0))
+    return done_count, daily_cap, next_available
+
+
+def _ad_snapshot(
+    index: int,
+    account: dict,
+    task: dict,
+    *,
+    message: str = "",
+    force_status: Optional[str] = None,
+) -> dict:
+    done_count, daily_cap, next_available = _ad_values(task)
+    if done_count is None or next_available is None:
+        return _task_snapshot(
+            "ad", index, account, "error", message=message or "广告任务状态字段缺失或格式错误",
+            done_count=done_count, daily_cap=daily_cap,
+        )
+    completed = done_count >= daily_cap
+    if force_status:
+        status = force_status
+    elif task.get("suspended") is True:
+        status = "suspended"
+    elif completed:
+        status = "completed"
+    elif next_available > int(time.time()):
+        status = "cooldown"
+    else:
+        status = "available"
+    return _task_snapshot(
+        "ad",
+        index,
+        account,
+        status,
+        completed=completed,
+        message=message,
+        done_count=done_count,
+        daily_cap=daily_cap,
+        next_available_at=_epoch_timestamp(next_available),
+    )
+
+
+def _with_task_status(result: dict, snapshot: dict) -> dict:
+    result["task_status"] = snapshot
+    return result
+
+
 def _quiz_account(index: int, account: dict, client: NewAPICheckin, events: list[dict], run_id: str) -> dict:
-    name = account.get("name") or f"账号{index}"
+    name = _safe_account_name(account, index)
     print(f"[{name}] 每日答题")
     task, error = task_status(client, "task3")
     if error:
-        return {"ok": False, "reason": error}
+        return _with_task_status(
+            {"ok": False, "reason": error},
+            _task_snapshot("quiz", index, account, "error", message=error),
+        )
     if task.get("suspended") is True:
         print("  跳过：答题任务已暂停")
-        return {"ok": True, "skipped": True, "reason": "quiz_suspended"}
+        return _with_task_status(
+            {"ok": True, "skipped": True, "reason": "quiz_suspended"},
+            _task_snapshot("quiz", index, account, "suspended", message="答题任务已暂停"),
+        )
     task_state = str(task.get("status") or "").lower()
     if not task_state:
         message = "答题任务状态缺失"
-        return {"ok": False, "reason": message}
+        return _with_task_status(
+            {"ok": False, "reason": message},
+            _task_snapshot("quiz", index, account, "error", message=message),
+        )
     if task_state in {"completed", "done", "success", "claimed"}:
         print(f"  跳过：答题状态为 {task_state}")
-        return {"ok": True, "skipped": True, "reason": f"quiz_{task_state}"}
+        return _with_task_status(
+            {"ok": True, "skipped": True, "reason": f"quiz_{task_state}"},
+            _task_snapshot("quiz", index, account, "completed", completed=True, message="今日答题已完成"),
+        )
     if task_state not in {"pending", "available", "ready", "in_progress"}:
         message = f"未知答题任务状态: {task_state}"
-        return {"ok": False, "reason": message}
+        return _with_task_status(
+            {"ok": False, "reason": message},
+            _task_snapshot("quiz", index, account, "error", message=message),
+        )
 
     start = _api_request(client, "开始每日答题", "/api/gwent/task3/start")
     question = _question_from_result(start)
     if not start.get("ok") or question is None:
         message = "开始答题失败或题目格式异常"
-        return {"ok": False, "reason": message}
+        return _with_task_status(
+            {"ok": False, "reason": message},
+            _task_snapshot("quiz", index, account, "error", message=message),
+        )
 
     quiz = answer_quiz_until_correct(client, question)
     if not quiz.get("ok"):
         message = str(quiz.get("error") or "答题失败")
-        return {"ok": False, "reason": message, "attempts": quiz.get("attempts", [])}
+        return _with_task_status(
+            {"ok": False, "reason": message, "attempts": quiz.get("attempts", [])},
+            _task_snapshot("quiz", index, account, "error", message=message),
+        )
 
     draw = draw_one_after_reward(client, "答题奖励")
     events.append(_history_event("quiz", run_id, index, account, draw))
+    snapshot = _task_snapshot(
+        "quiz",
+        index,
+        account,
+        "completed",
+        completed=True,
+        message="答题完成，奖励翻牌成功" if draw.get("ok") else "答题完成，但奖励翻牌失败",
+    )
     if not draw.get("ok"):
-        return {
+        return _with_task_status({
             "ok": False,
             "reason": f"答题成功但奖励翻牌失败：{draw.get('message') or '未知错误'}",
             "attempts": quiz.get("attempts", []),
             "draw": draw,
-        }
-    return {
+        }, snapshot)
+    return _with_task_status({
         "ok": True,
         "attempts": quiz.get("attempts", []),
         "draw": draw,
-    }
+    }, snapshot)
 
 
 def _ad_account(index: int, account: dict, client: NewAPICheckin, events: list[dict], run_id: str) -> dict:
-    name = account.get("name") or f"账号{index}"
+    name = _safe_account_name(account, index)
     print(f"[{name}] 观看广告")
     task, error = task_status(client, "task2")
     if error:
-        return {"ok": False, "reason": error}
+        return _with_task_status(
+            {"ok": False, "reason": error},
+            _task_snapshot("ad", index, account, "error", message=error, daily_cap=3),
+        )
     if task.get("suspended") is True:
         print("  跳过：广告任务不可用")
-        return {"ok": True, "skipped": True, "reason": "ad_task_unavailable"}
+        done_count = _safe_int(task.get("done_count"))
+        server_daily_cap = _safe_int(task.get("daily_cap"), minimum=1) or 3
+        return _with_task_status(
+            {"ok": True, "skipped": True, "reason": "ad_task_unavailable"},
+            _task_snapshot(
+                "ad", index, account, "suspended", message="广告任务不可用",
+                done_count=done_count, daily_cap=min(server_daily_cap, 3),
+            ),
+        )
 
-    done_count = _safe_int(task.get("done_count"))
-    server_daily_cap = _safe_int(task.get("daily_cap"), minimum=1) or 3
-    daily_cap = min(server_daily_cap, 3)
-    next_available_raw = task.get("next_available_at", 0)
-    next_available = 0 if next_available_raw in (None, "") else _safe_int(next_available_raw, minimum=0)
+    done_count, daily_cap, next_available = _ad_values(task)
     if done_count is None or next_available is None:
         message = "广告任务状态字段缺失或格式错误"
-        return {"ok": False, "reason": message}
+        return _with_task_status(
+            {"ok": False, "reason": message},
+            _task_snapshot(
+                "ad", index, account, "error", message=message,
+                done_count=done_count, daily_cap=daily_cap,
+            ),
+        )
     if done_count >= daily_cap:
         print(f"  跳过：已达到每日上限 {done_count}/{daily_cap}")
-        return {"ok": True, "skipped": True, "reason": "daily_cap_reached"}
+        return _with_task_status(
+            {"ok": True, "skipped": True, "reason": "daily_cap_reached"},
+            _ad_snapshot(index, account, task, message="今日广告任务已完成"),
+        )
     now_epoch = int(time.time())
-    if next_available > 10**11:
-        next_available //= 1000
     if next_available > now_epoch:
         print(f"  跳过：广告冷却中，还需 {next_available - now_epoch} 秒")
-        return {"ok": True, "skipped": True, "reason": "cooldown"}
+        return _with_task_status(
+            {"ok": True, "skipped": True, "reason": "cooldown"},
+            _ad_snapshot(index, account, task, message="广告任务冷却中"),
+        )
 
     start = _api_request(client, "开始观看广告", "/api/gwent/ad/start")
     if not start.get("ok"):
         message = "开始广告任务失败"
-        return {"ok": False, "reason": message}
+        return _with_task_status(
+            {"ok": False, "reason": message},
+            _ad_snapshot(index, account, task, message=message, force_status="error"),
+        )
     start_data = start.get("data", {}).get("data")
     start_data = start_data if isinstance(start_data, dict) else {}
     duration = _safe_int(start_data.get("duration_sec"), minimum=1, maximum=MAX_AD_DURATION_SECONDS)
@@ -480,18 +721,54 @@ def _ad_account(index: int, account: dict, client: NewAPICheckin, events: list[d
     claim = _api_request(client, "领取广告充能", "/api/gwent/ad/claim")
     if not claim.get("ok"):
         message = "领取广告充能失败"
-        return {"ok": False, "reason": message}
+        return _with_task_status(
+            {"ok": False, "reason": message},
+            _ad_snapshot(index, account, task, message=message, force_status="error"),
+        )
 
+    estimated_task = dict(task)
+    estimated_task["done_count"] = min(daily_cap, done_count + 1)
+    claim_task = _task_from_api_result(claim, "task2")
+    if claim_task:
+        for key in ("done_count", "daily_cap", "next_available_at", "status", "suspended"):
+            if key in claim_task:
+                estimated_task[key] = claim_task[key]
+
+    # 奖励到账后先立即翻牌；状态刷新不能延迟这次奖励翻牌。
     draw = draw_one_after_reward(client, "广告奖励")
     events.append(_history_event("ad", run_id, index, account, draw))
+    refreshed_task, refresh_error = task_status(client, "task2")
+    final_task = refreshed_task if refreshed_task is not None else estimated_task
+    estimated_done, estimated_cap, estimated_next = _ad_values(estimated_task)
+    force_snapshot_status = None
+    if (
+        refresh_error
+        and (estimated_done or 0) < estimated_cap
+        and (estimated_next is None or estimated_next <= int(time.time()))
+    ):
+        force_snapshot_status = "unknown"
+    snapshot = _ad_snapshot(
+        index,
+        account,
+        final_task,
+        message=(
+            "广告奖励已领取，状态刷新失败"
+            if refresh_error
+            else ("广告奖励已领取，奖励翻牌成功" if draw.get("ok") else "广告奖励已领取，但奖励翻牌失败")
+        ),
+        force_status=force_snapshot_status,
+    )
     if not draw.get("ok"):
-        return {
+        return _with_task_status({
             "ok": False,
             "reason": f"广告充能成功但奖励翻牌失败：{draw.get('message') or '未知错误'}",
             "duration_sec": duration,
             "draw": draw,
-        }
-    return {"ok": True, "duration_sec": duration, "draw": draw}
+        }, snapshot)
+    return _with_task_status(
+        {"ok": True, "duration_sec": duration, "draw": draw},
+        snapshot,
+    )
 
 
 def run_task(task_type: str) -> bool:
@@ -513,7 +790,36 @@ def run_task(task_type: str) -> bool:
             account.get("user_id"),
             account.get("cf_clearance"),
         )
-        results.append(runner(index, account, client, events, run_id))
+        try:
+            result = runner(index, account, client, events, run_id)
+        except Exception as error:  # pragma: no cover - per-account safety boundary
+            message = f"任务执行异常: {type(error).__name__}"
+            print(f"[{_safe_account_name(account, index)}] FAIL {message}")
+            result = _with_task_status(
+                {"ok": False, "reason": message},
+                _task_snapshot(
+                    task_type,
+                    index,
+                    account,
+                    "error",
+                    message=message,
+                    daily_cap=3 if task_type == "ad" else None,
+                ),
+            )
+        if not isinstance(result.get("task_status"), dict):
+            message = "任务未生成状态快照"
+            result = dict(result)
+            result["ok"] = False
+            result["reason"] = result.get("reason") or message
+            result["task_status"] = _task_snapshot(
+                task_type,
+                index,
+                account,
+                "error",
+                message=message,
+                daily_cap=3 if task_type == "ad" else None,
+            )
+        results.append(result)
 
     failed = sum(1 for result in results if not result.get("ok"))
     skipped = sum(1 for result in results if result.get("skipped"))
@@ -538,7 +844,14 @@ def run_task(task_type: str) -> bool:
         events,
         history_status,
     )
-    return failed == 0 and history_saved
+    status_saved = publish_task_status({
+        "schema_version": 1,
+        "local_date": beijing_local_date(),
+        "updated_at": utc_timestamp(),
+        "source": task_type,
+        "accounts": [result["task_status"] for result in results],
+    })
+    return failed == 0 and history_saved and status_saved
 
 
 def main() -> None:

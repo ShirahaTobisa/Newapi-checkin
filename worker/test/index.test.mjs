@@ -8,6 +8,7 @@ const MAX_BODY_BYTES = 256 * 1024;
 const endpoint = "https://relay.example/api/config";
 const historyEndpoint = "https://relay.example/api/gwent/history";
 const scheduleEndpoint = "https://relay.example/api/gwent/schedule";
+const taskStatusEndpoint = "https://relay.example/api/gwent/task-status";
 const defaultEnv = {
   ALLOWED_ORIGINS: "https://app.example, null",
   JIANGUO_USERNAME: "user@example.com",
@@ -48,6 +49,15 @@ function scheduleRequest(method, { origin = "https://app.example", headers = {},
     requestHeaders.set("Authorization", "Bearer actions-secret");
   }
   return new Request(scheduleEndpoint, { method, headers: requestHeaders, body });
+}
+
+function taskStatusRequest(method, { origin = "https://app.example", headers = {}, body } = {}) {
+  const requestHeaders = new Headers(headers);
+  if (origin !== null) requestHeaders.set("Origin", origin);
+  if (method === "POST" && !requestHeaders.has("Authorization")) {
+    requestHeaders.set("Authorization", "Bearer actions-secret");
+  }
+  return new Request(taskStatusEndpoint, { method, headers: requestHeaders, body });
 }
 
 function mockKv(initialValue = null) {
@@ -134,6 +144,29 @@ function historyPayload() {
         prize_rarity: "unknown",
         bonus_percent: 0,
         message: "还在冷却中",
+      },
+    ],
+  };
+}
+
+function taskStatusPayload(source = "quiz") {
+  const isAd = source === "ad";
+  return {
+    schema_version: 1,
+    local_date: "2026-07-18",
+    updated_at: "2026-07-17T16:20:00Z",
+    source,
+    accounts: [
+      {
+        account_key: "abcdef1234567890",
+        account_name: "账号1",
+        task_type: source,
+        status: isAd ? "cooldown" : "completed",
+        completed: !isAd,
+        ...(isAd ? { done_count: 1, daily_cap: 3 } : {}),
+        next_available_at: isAd ? "2026-07-17T18:00:00Z" : null,
+        message: isAd ? "今日已看 1 次" : "今日答题完成",
+        checked_at: "2026-07-17T16:19:59Z",
       },
     ],
   };
@@ -488,6 +521,227 @@ test("schedule rejects malformed payloads and fails closed on corrupt state", as
   assert.equal((await errorBody(corrupt)).error.code, "schedule_corrupt");
 });
 
+test("task status endpoint exposes only POST and validates auth and safe fields", async () => {
+  const kv = mockHistoryKv();
+  const env = { ...defaultEnv, ACTIONS_TOKEN: "actions-secret", CONFIG_KV: kv };
+  const options = await handleRequest(taskStatusRequest("OPTIONS"), env);
+  assert.equal(options.status, 204);
+  assert.equal(options.headers.get("Access-Control-Allow-Methods"), "POST, OPTIONS");
+
+  const method = await handleRequest(taskStatusRequest("GET"), env);
+  assert.equal(method.status, 405);
+  assert.equal((await errorBody(method)).error.code, "method_not_allowed");
+
+  const unauthorized = await handleRequest(
+    taskStatusRequest("POST", {
+      headers: { Authorization: "Bearer sync-secret" },
+      body: JSON.stringify(taskStatusPayload()),
+    }),
+    env,
+  );
+  assert.equal(unauthorized.status, 401);
+
+  const sensitivePayload = taskStatusPayload();
+  sensitivePayload.accounts[0].cookie = "must-not-be-stored";
+  const sensitive = await handleRequest(
+    taskStatusRequest("POST", { body: JSON.stringify(sensitivePayload) }),
+    env,
+  );
+  assert.equal(sensitive.status, 400);
+  assert.equal((await errorBody(sensitive)).error.code, "sensitive_task_status_field");
+
+  const invalidPayloads = [];
+  const mismatch = taskStatusPayload();
+  mismatch.accounts[0].task_type = "ad";
+  invalidPayloads.push(mismatch);
+  const badStatus = taskStatusPayload();
+  badStatus.accounts[0].status = "done";
+  invalidPayloads.push(badStatus);
+  const badCap = taskStatusPayload("ad");
+  badCap.accounts[0].daily_cap = 4;
+  invalidPayloads.push(badCap);
+  const overCap = taskStatusPayload("ad");
+  overCap.accounts[0].done_count = 3;
+  overCap.accounts[0].daily_cap = 2;
+  invalidPayloads.push(overCap);
+  const nonUtc = taskStatusPayload();
+  nonUtc.updated_at = "2026-07-18T00:20:00+08:00";
+  invalidPayloads.push(nonUtc);
+  const badDate = taskStatusPayload();
+  badDate.local_date = "2026-02-30";
+  invalidPayloads.push(badDate);
+  const unknownField = taskStatusPayload();
+  unknownField.debug = true;
+  invalidPayloads.push(unknownField);
+
+  for (const payload of invalidPayloads) {
+    const response = await handleRequest(
+      taskStatusRequest("POST", { body: JSON.stringify(payload) }),
+      env,
+    );
+    assert.equal(response.status, 400);
+    assert.equal((await errorBody(response)).error.code, "invalid_task_status");
+  }
+  assert.equal(kv.value("gwent-task-status-quiz-v1.json"), null);
+  assert.equal(kv.value("gwent-task-status-ad-v1.json"), null);
+});
+
+test("separate task keys merge per account without changing history aggregates", async () => {
+  const kv = mockHistoryKv();
+  const env = { ...defaultEnv, ACTIONS_TOKEN: "actions-secret", CONFIG_KV: kv };
+  const history = await handleRequest(
+    historyRequest("POST", { body: JSON.stringify(historyPayload()) }),
+    env,
+  );
+  assert.equal(history.status, 200);
+  const historyBefore = kv.value("gwent-history-v1.json");
+
+  const quizPayload = taskStatusPayload("quiz");
+  quizPayload.accounts.push({
+    ...quizPayload.accounts[0],
+    account_key: "1111222233334444",
+    account_name: "账号2",
+    message: "账号2 今日答题完成",
+  });
+  const adPayload = taskStatusPayload("ad");
+  adPayload.updated_at = "2026-07-17T16:25:00Z";
+  adPayload.accounts[0].checked_at = "2026-07-17T16:24:59Z";
+  const [quiz, ad] = await Promise.all([
+    handleRequest(
+      taskStatusRequest("POST", { body: JSON.stringify(quizPayload) }),
+      env,
+    ),
+    handleRequest(
+      taskStatusRequest("POST", { body: JSON.stringify(adPayload) }),
+      env,
+    ),
+  ]);
+  assert.equal(quiz.status, 200);
+  assert.equal((await quiz.json()).stored, true);
+  assert.equal(ad.status, 200);
+  assert.equal(kv.value("gwent-history-v1.json"), historyBefore);
+  assert.equal(
+    JSON.parse(kv.value("gwent-task-status-quiz-v1.json")).source,
+    "quiz",
+  );
+  assert.equal(
+    JSON.parse(kv.value("gwent-task-status-ad-v1.json")).source,
+    "ad",
+  );
+
+  const newerQuiz = taskStatusPayload("quiz");
+  newerQuiz.updated_at = "2026-07-17T16:30:00Z";
+  newerQuiz.accounts[0].checked_at = "2026-07-17T16:29:59Z";
+  newerQuiz.accounts[0].message = "较新的答题状态";
+  await handleRequest(
+    taskStatusRequest("POST", { body: JSON.stringify(newerQuiz) }),
+    env,
+  );
+
+  const staleQuiz = taskStatusPayload("quiz");
+  staleQuiz.updated_at = "2026-07-17T16:35:00Z";
+  staleQuiz.accounts[0].checked_at = "2026-07-17T16:28:59Z";
+  staleQuiz.accounts[0].message = "不得覆盖新状态";
+  const stale = await handleRequest(
+    taskStatusRequest("POST", { body: JSON.stringify(staleQuiz) }),
+    env,
+  );
+  assert.equal(stale.status, 200);
+  const staleBody = await stale.json();
+  assert.equal(staleBody.stale, true);
+  assert.equal(staleBody.stored, false);
+  assert.equal(staleBody.ignored_count, 1);
+
+  const response = await handleRequest(historyRequest("GET"), env);
+  const body = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(body.updated_at, "2026-07-17T16:30:00Z");
+  assert.equal(body.totals.total_runs, 1);
+  assert.equal(body.totals.total_draws, 1);
+  assert.equal(body.runs.length, 1);
+  assert.equal(body.events.length, 2);
+  assert.equal(body.task_statuses.local_date, "2026-07-18");
+  assert.equal(body.task_statuses.updated_at, "2026-07-17T16:30:00Z");
+  assert.equal(body.task_statuses.accounts.length, 3);
+  assert.deepEqual(
+    body.task_statuses.accounts.map((account) => account.task_type).sort(),
+    ["ad", "quiz", "quiz"],
+  );
+  assert.equal(
+    body.task_statuses.accounts.find((account) => account.task_type === "quiz").message,
+    "较新的答题状态",
+  );
+  assert.equal(
+    body.task_statuses.accounts.find((account) => account.account_key === "1111222233334444")
+      .message,
+    "账号2 今日答题完成",
+  );
+  assert.equal(kv.value("gwent-history-v1.json"), historyBefore);
+});
+
+test("task status keeps only the latest Beijing date and tolerates old or missing state", async () => {
+  const kv = mockHistoryKv();
+  const env = { ...defaultEnv, ACTIONS_TOKEN: "actions-secret", CONFIG_KV: kv };
+  await kv.put(
+    "gwent-task-status-quiz-v1.json",
+    JSON.stringify({ schema_version: 0, accounts: [] }),
+  );
+  await kv.put(
+    "gwent-task-status-ad-v1.json",
+    JSON.stringify({ schema_version: 0, accounts: [] }),
+  );
+
+  const beforeFirstPost = await handleRequest(historyRequest("GET"), env);
+  assert.deepEqual((await beforeFirstPost.json()).task_statuses, {
+    local_date: null,
+    updated_at: null,
+    accounts: [],
+  });
+
+  await handleRequest(
+    taskStatusRequest("POST", { body: JSON.stringify(taskStatusPayload("quiz")) }),
+    env,
+  );
+  const nextDay = taskStatusPayload("ad");
+  nextDay.local_date = "2026-07-19";
+  nextDay.updated_at = "2026-07-18T16:20:00Z";
+  nextDay.accounts[0].checked_at = "2026-07-18T16:19:59Z";
+  await handleRequest(
+    taskStatusRequest("POST", { body: JSON.stringify(nextDay) }),
+    env,
+  );
+
+  const afterAd = await handleRequest(historyRequest("GET"), env);
+  const afterAdBody = await afterAd.json();
+  assert.equal(afterAdBody.task_statuses.local_date, "2026-07-19");
+  assert.equal(afterAdBody.task_statuses.accounts.length, 1);
+  assert.equal(afterAdBody.task_statuses.accounts[0].task_type, "ad");
+
+  const nextDayQuiz = taskStatusPayload("quiz");
+  nextDayQuiz.local_date = "2026-07-19";
+  nextDayQuiz.updated_at = "2026-07-18T16:25:00Z";
+  nextDayQuiz.accounts[0].checked_at = "2026-07-18T16:24:59Z";
+  await handleRequest(
+    taskStatusRequest("POST", { body: JSON.stringify(nextDayQuiz) }),
+    env,
+  );
+
+  const stalePriorDay = await handleRequest(
+    taskStatusRequest("POST", { body: JSON.stringify(taskStatusPayload("quiz")) }),
+    env,
+  );
+  assert.equal((await stalePriorDay.json()).stale, true);
+
+  const response = await handleRequest(historyRequest("GET"), env);
+  const body = await response.json();
+  assert.equal(body.task_statuses.local_date, "2026-07-19");
+  assert.equal(body.task_statuses.accounts.length, 2);
+  assert.deepEqual(
+    body.task_statuses.accounts.map((account) => account.task_type).sort(),
+    ["ad", "quiz"],
+  );
+});
+
 test("public history GET returns an empty safe document", async () => {
   const response = await handleRequest(
     historyRequest("GET"),
@@ -499,6 +753,7 @@ test("public history GET returns an empty safe document", async () => {
   assert.equal(response.headers.get("Access-Control-Allow-Origin"), "https://app.example");
   assert.equal(body.totals.total_draws, 0);
   assert.deepEqual(body.events, []);
+  assert.deepEqual(body.task_statuses, { local_date: null, updated_at: null, accounts: [] });
 });
 
 test("history POST aggregates events and is idempotent per run", async () => {

@@ -1,6 +1,6 @@
 # Cloudflare Worker 配置中继
 
-这个模块提供账号配置同步、脱敏翻牌历史和翻牌调度租约三组接口。答题和广告任务在 GitHub Actions 中运行，Worker 只负责配置、历史和租约，不直接保存额外的 Cookie Secret。浏览器对 `GET /api/config` 和 `PUT /api/config` 的请求会写入 Cloudflare KV；未绑定 KV 时回退到固定的坚果云 WebDAV 文件：
+这个模块提供账号配置同步、脱敏翻牌历史、每日任务状态和翻牌调度租约四组接口。答题和广告任务在 GitHub Actions 中运行，Worker 只负责配置、脱敏状态、历史和租约，不直接保存额外的 Cookie Secret。浏览器对 `GET /api/config` 和 `PUT /api/config` 的请求会写入 Cloudflare KV；未绑定 KV 时回退到固定的坚果云 WebDAV 文件：
 
 `https://dav.jianguoyun.com/dav/newapi-config.json`
 
@@ -10,6 +10,7 @@
 
 - 配置 `GET` 接受 `SYNC_TOKEN` 或 `ACTIONS_TOKEN`，配置 `PUT` 只接受 `SYNC_TOKEN`。
 - `GET /api/gwent/history` 公开返回脱敏汇总；`POST /api/gwent/history` 只接受 `ACTIONS_TOKEN`，并拒绝 Cookie、Session、Token、密码等敏感字段。
+- `POST /api/gwent/task-status` 只接受 `ACTIONS_TOKEN`，在 quiz/ad 两个独立 KV key 中按北京时间日期保存状态。它只更新状态，不会新增历史 run、翻牌次数或额度。
 - `POST /api/gwent/schedule` 只接受 `ACTIONS_TOKEN`，以 KV 保存两小时槽位令牌和 15 分钟短期租约；租约请求失败时 Actions 会安全跳过本轮。
 - 历史运行的 `source` 可为 `gwent`、`quiz` 或 `ad`；旧记录没有该字段时按 `gwent` 兼容处理。
 - `ALLOWED_ORIGINS` 是逗号或换行分隔的精确白名单，不支持通配符、子域推断或前缀匹配。
@@ -60,7 +61,7 @@ npx wrangler secret put ACTIONS_TOKEN
 npx wrangler deploy
 ```
 
-`JIANGUO_APP_PASSWORD` 必须使用坚果云为 WebDAV 创建的应用密码，不要使用账户登录密码。`SYNC_TOKEN` 建议使用密码管理器生成至少 32 字节的随机值。
+`JIANGUO_APP_PASSWORD` 必须使用坚果云为 WebDAV 创建的应用密码，不要使用账户登录密码。`SYNC_TOKEN` 建议使用密码管理器生成至少 32 字节的随机值。`ACTIONS_TOKEN` 同时用于历史、每日任务状态和调度接口。
 
 ## 浏览器调用
 
@@ -101,6 +102,74 @@ const history = await response.json();
 ```
 
 历史只保留全量累计汇总、最近 500 条事件、最近 120 次运行和最近 90 天趋势。GitHub Actions 使用 `ACTIONS_TOKEN` 上报，每个 `run_id` 只累计一次。
+
+响应还会包含最新北京时间日期的每日任务状态，方便前端按 `account_key` 聚合每个账号的答题和视频进度：
+
+```json
+{
+  "updated_at": "2026-07-18T01:20:00Z",
+  "totals": { "total_runs": 10, "total_draws": 12 },
+  "task_statuses": {
+    "local_date": "2026-07-18",
+    "updated_at": "2026-07-18T01:20:00Z",
+    "accounts": [
+      {
+        "account_key": "abcdef1234567890",
+        "account_name": "账号1",
+        "task_type": "ad",
+        "status": "cooldown",
+        "completed": false,
+        "done_count": 1,
+        "daily_cap": 3,
+        "next_available_at": "2026-07-18T03:00:00Z",
+        "message": "今日已完成 1 次",
+        "checked_at": "2026-07-18T01:19:59Z"
+      }
+    ]
+  }
+}
+```
+
+Worker 并行读取 quiz/ad 两个状态 key，选择两者中最新的 `local_date`，只把该日期的状态合并为扁平 `accounts`。因此其中一个任务尚未进行今日检查时，不会把它昨天的完成状态带到今天。顶层 `updated_at` 是翻牌历史与合并后任务状态两者中较新的时间；`totals`、`runs`、`events` 等翻牌数据不会因状态上报而变化。尚无状态或旧 KV 尚未写入状态时，返回 `local_date: null`、`updated_at: null` 和空 `accounts`。
+
+## 每日任务状态接口
+
+答题或视频任务检查完一批账号后，以 `ACTIONS_TOKEN` 上报：
+
+```json
+POST /api/gwent/task-status
+Authorization: Bearer <ACTIONS_TOKEN>
+Content-Type: application/json
+
+{
+  "schema_version": 1,
+  "local_date": "2026-07-18",
+  "updated_at": "2026-07-18T01:20:00Z",
+  "source": "ad",
+  "accounts": [
+    {
+      "account_key": "abcdef1234567890",
+      "account_name": "账号1",
+      "task_type": "ad",
+      "status": "cooldown",
+      "completed": false,
+      "done_count": 1,
+      "daily_cap": 3,
+      "next_available_at": "2026-07-18T03:00:00Z",
+      "message": "等待下一次视频",
+      "checked_at": "2026-07-18T01:19:59Z"
+    }
+  ]
+}
+```
+
+- `source` 和每项 `task_type` 只能是 `quiz` 或 `ad`，且必须一致。
+- `status` 只能是 `completed`、`available`、`cooldown`、`pending`、`suspended`、`error` 或 `unknown`。
+- `done_count` 可选，范围为 0–3；`daily_cap` 可选，范围为 1–3，且 `done_count` 不能大于 `daily_cap`。
+- `updated_at`、`checked_at` 和非空 `next_available_at` 必须是 UTC ISO 时间；`local_date` 必须是有效的北京时间 `YYYY-MM-DD` 日期。
+- quiz 和 ad 分别保存到 `gwent-task-status-quiz-v1.json` 与 `gwent-task-status-ad-v1.json`，并发上报不会互相覆盖；两者都与翻牌历史 `gwent-history-v1.json` 完全分离。
+- 同日上报按 `account_key` 合并，未出现在本批的账号继续保留；只有 `checked_at` 不早于现有记录的账号快照才会覆盖。进入新日期时，该 source 会清除自己的前一天状态，较旧日期的迟到请求会被忽略。
+- Worker 只接受白名单字段，并递归拒绝 Cookie、Session、Token、密码等敏感字段。
 
 ## 翻牌调度租约
 

@@ -54,6 +54,64 @@ test("recent draw records identify regular, quiz, and video sources", () => {
   assert.match(script, /taskTypeLabel\(event\.task_type\)/u);
 });
 
+test("dashboard renders daily quiz and video status without carrying yesterday forward", () => {
+  assert.match(html, /id="task-status-title">今日账号任务状态/u);
+  assert.match(html, /id="task-status-body"/u);
+  assert.match(html, /视频进度/u);
+  assert.match(html, /下次可看/u);
+  assert.match(script, /renderTaskStatuses\(data\.task_statuses\)/u);
+  assert.match(script, /timeZone:\s*"Asia\/Shanghai"/u);
+  assert.match(script, /formatToParts/u);
+  assert.match(script, /payload\.local_date === today/u);
+  assert.match(script, /待今日检查/u);
+  assert.match(script, /completed:\s*\{ style: "success", label: "已完成" \}/u);
+  assert.match(script, /cooldown:\s*\{ style: "cooldown", label: "冷却中" \}/u);
+  assert.match(script, /taskTimeElement/u);
+  assert.match(script, /setAttribute\("aria-label"/u);
+  assert.match(script, /Number\.isFinite\(Number\(adStatus\.done_count\)\)/u);
+  assert.doesNotMatch(css, /task-status-table thead\s*\{\s*display:\s*none/u);
+});
+
+test("expired video cooldown is presented as available", () => {
+  const start = script.indexOf("  function effectiveAdStatus");
+  const end = script.indexOf("\n\n  function renderIcons", start);
+  assert.ok(start >= 0 && end > start);
+  const effectiveAdStatus = new Function(
+    `${script.slice(start, end)}\nreturn effectiveAdStatus;`,
+  )();
+
+  const expired = effectiveAdStatus({
+    status: "cooldown",
+    completed: false,
+    next_available_at: "2026-07-18T02:00:00Z",
+  }, true, Date.parse("2026-07-18T03:00:00Z"));
+  assert.equal(expired.status, "available");
+  assert.equal(expired.next_available_at, null);
+
+  const active = effectiveAdStatus({
+    status: "cooldown",
+    completed: false,
+    next_available_at: "2026-07-18T04:00:00Z",
+  }, true, Date.parse("2026-07-18T03:00:00Z"));
+  assert.equal(active.status, "cooldown");
+});
+
+test("manual draw control delegates confirmation to GitHub Actions without browser secrets", () => {
+  assert.match(html, /id="manual-draw-title">手动翻牌/u);
+  assert.match(
+    html,
+    /href="https:\/\/github\.com\/ShirahaTobisa\/Newapi-checkin\/actions\/workflows\/gwent\.yml"/u,
+  );
+  assert.match(html, /target="_blank" rel="noopener noreferrer"/u);
+  assert.match(html, /Run workflow/u);
+  assert.match(html, /每账号 1 次/u);
+  assert.match(html, /先激活 50% 加成/u);
+  assert.match(html, /不会改变下一次整点任务/u);
+  assert.match(html, /不会读取或保存 Cookie、Token/u);
+  assert.match(css, /\.action-button\s*\{[^}]*min-height:\s*44px/su);
+  assert.doesNotMatch(html + script, /ACTIONS_TOKEN|localStorage|sessionStorage/u);
+});
+
 test("dashboard uses restrained panel geometry", () => {
   assert.match(css, /--radius: 7px/u);
   assert.doesNotMatch(css, /border-radius:\s*(?:1[0-9]|[2-9][0-9])px/u);
