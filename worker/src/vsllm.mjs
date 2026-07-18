@@ -317,14 +317,26 @@ async function apiRequest(account, path, requestOptions = {}, options = {}) {
       headers,
       body,
       signal: controller.signal,
-      redirect: "error",
+      redirect: "manual",
     });
   } catch (error) {
     clearTimeout(timeout);
+    const transportDetail = safeMessage(
+      error instanceof Error ? `${error.name}: ${error.message}` : error,
+      account,
+      "fetch failed",
+    ).slice(0, 240);
+    console.error(JSON.stringify({
+      event: "upstream_fetch_failed",
+      host: new URL(account.baseUrl).hostname,
+      path,
+      error: transportDetail,
+    }));
     const timeoutError = controller.signal.aborted || error?.name === "AbortError" || error?.name === "TimeoutError";
     return {
       received: false,
       transport_error: timeoutError ? "timeout" : "network",
+      transport_detail: transportDetail,
       http_status: 0,
       response_ok: false,
       payload: null,
@@ -343,6 +355,7 @@ async function apiRequest(account, path, requestOptions = {}, options = {}) {
   return {
     received: true,
     transport_error: null,
+    transport_detail: null,
     http_status: response.status,
     response_ok: response.ok,
     payload: parsed.ok ? parsed.value : null,
@@ -433,7 +446,12 @@ export async function getBalance(accountInput, options = {}) {
   if (prepared.error) return prepared.error;
   const account = prepared.account;
   const result = await apiRequest(account, "/api/user/self", { method: "GET" }, options);
-  if (!successfulPayload(result)) return endpointFailure(result, account, "余额读取失败");
+  if (!successfulPayload(result)) {
+    const failure = endpointFailure(result, account, "余额读取失败");
+    return result.transport_detail
+      ? { ...failure, diagnostic: result.transport_detail }
+      : failure;
+  }
   const data = result.payload.data;
   if (!data || typeof data !== "object" || Array.isArray(data)) {
     return endpointFailure({ ...result, parse_error: "invalid_shape" }, account, "余额响应格式错误");

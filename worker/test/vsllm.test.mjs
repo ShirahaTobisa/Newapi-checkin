@@ -113,6 +113,7 @@ test("generic check-in uses safe headers and returns only allowlisted data", asy
   assert.doesNotMatch(JSON.stringify(result), /private-session|do-not-return/u);
   assert.equal(mock.calls[0].init.headers.get("Cookie"), "session=private-session");
   assert.equal(mock.calls[0].init.headers.get("new-api-user"), "77");
+  assert.equal(mock.calls[0].init.redirect, "manual");
   assert.equal(mock.calls[0].url, "https://api.example.com/api/user/checkin");
 });
 
@@ -167,6 +168,24 @@ test("global fetch keeps the Cloudflare Workers receiver", async () => {
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test("balance transport diagnostics are admin-safe and redact account secrets", async () => {
+  const originalError = console.error;
+  console.error = () => {};
+  let result;
+  try {
+    result = await getBalance(existingAccount, {
+      fetch: async () => {
+        throw new TypeError("connection failed for session-secret");
+      },
+    });
+  } finally {
+    console.error = originalError;
+  }
+  assert.equal(result.ok, false);
+  assert.match(result.diagnostic, /TypeError/u);
+  assert.doesNotMatch(result.diagnostic, /session-secret/u);
 });
 
 test("getGwentStatus exposes only normalized charges and task state", async () => {
@@ -258,13 +277,23 @@ test("network failure after draw request is uncertain and is never retried", asy
     jsonResponse({ success: true, message: "加成已激活" }),
     networkError,
   ]);
+  const originalError = console.error;
+  const errorLogs = [];
+  console.error = (...values) => errorLogs.push(values.join(" "));
 
-  const result = await unlockAndDraw(existingAccount, { fetch: mock.fetch });
+  let result;
+  try {
+    result = await unlockAndDraw(existingAccount, { fetch: mock.fetch });
+  } finally {
+    console.error = originalError;
+  }
   assert.equal(result.ok, false);
   assert.equal(result.status, "uncertain");
   assert.equal(result.draw_sent, true);
   assert.equal(mock.calls.length, 2);
   assert.doesNotMatch(JSON.stringify(result), /session-secret|socket closed/u);
+  assert.match(errorLogs.join("\n"), /upstream_fetch_failed/u);
+  assert.doesNotMatch(errorLogs.join("\n"), /session-secret/u);
 });
 
 test("timeout after draw request is uncertain and is never retried", async () => {
