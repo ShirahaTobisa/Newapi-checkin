@@ -10,7 +10,7 @@
 
 - 配置 `GET` 接受 `SYNC_TOKEN` 或 `ACTIONS_TOKEN`，配置 `PUT` 只接受 `SYNC_TOKEN`。
 - `GET /api/gwent/history` 公开返回脱敏汇总；`POST /api/gwent/history` 只接受 `ACTIONS_TOKEN`，并拒绝 Cookie、Session、Token、密码等敏感字段。
-- `POST /api/gwent/schedule` 只接受 `ACTIONS_TOKEN`，以 KV 保存 6 小时 5 分钟调度间隔和短期租约；租约请求失败时 Actions 会安全跳过本轮。
+- `POST /api/gwent/schedule` 只接受 `ACTIONS_TOKEN`，以 KV 保存两小时槽位令牌和 15 分钟短期租约；租约请求失败时 Actions 会安全跳过本轮。
 - 历史运行的 `source` 可为 `gwent`、`quiz` 或 `ad`；旧记录没有该字段时按 `gwent` 兼容处理。
 - `ALLOWED_ORIGINS` 是逗号或换行分隔的精确白名单，不支持通配符、子域推断或前缀匹配。
 - 本地 `file://` 页面通常发送 `Origin: null`。只有在白名单中明确加入字面值 `null` 才会放行。
@@ -104,17 +104,29 @@ const history = await response.json();
 
 ## 翻牌调度租约
 
-GitHub Actions 在北京时间 01:05、07:05、13:05、19:05 触发，先向私有接口申请租约：
+GitHub Actions 每两小时整点触发一次，并按运行时所属的 UTC 两小时窗口生成稳定槽位令牌，例如 `scheduled:20260718T04`。申请槽位时传入 `min_interval_seconds: 0`，让 Worker 按令牌防重，不再用“上次完成时间 + 两小时”推算下一轮：
 
 ```json
 POST /api/gwent/schedule
 Authorization: Bearer <ACTIONS_TOKEN>
 Content-Type: application/json
 
-{"action":"claim","lease_token":"<GITHUB_RUN_ID>:<GITHUB_RUN_ATTEMPT>","min_interval_seconds":21900}
+{"action":"claim","lease_token":"scheduled:20260718T04","min_interval_seconds":0}
 ```
 
-只有返回 `due: true` 的运行才会翻牌；任务结束后使用同一个 `lease_token` 发送 `{"action":"complete"}`。KV 中还会记录最近一次申请时间，因此即使历史上报失败或任务异常退出，也不会在下一次 5 分钟唤醒时重复消耗翻牌次数。
+只有返回 `due: true` 的运行才会翻牌；任务结束后使用同一个 `lease_token` 发送 `{"action":"complete"}`。同一槽位的行为如下：
+
+- 15 分钟租约仍有效时，同 token 重试返回 `reused: true`，不同 token 返回 `reason: "lease_active"`。
+- 租约已经过期或任务已经完成时，同 token 重试返回 `due: false` 和 `reason: "duplicate_slot"`，不会重复消耗翻牌次数。
+- 下一个两小时槽位使用新 token，因此即使上一轮在整点后几分钟才完成，也能按时申请，不受运行时长漂移影响。
+
+KV 状态仍保持 `schema_version: 1`，并新增可选的 `last_claimed_token`。旧状态没有该字段时，会从现有租约或 `last_completed_token` 安全推导，无需手工迁移。
+
+旧客户端仍可省略 `min_interval_seconds`，或传入不小于 `7200` 的正数，继续使用基于最近申请/完成时间的间隔模式；默认间隔为 7200 秒。手动运行应使用唯一 token 并设置 `force: true`，以绕过旧式时间间隔，但仍保留活动租约和相同 token 防重：
+
+```json
+{"action":"claim","lease_token":"manual:<GITHUB_RUN_ID>:<GITHUB_RUN_ATTEMPT>","force":true}
+```
 
 ## 测试
 

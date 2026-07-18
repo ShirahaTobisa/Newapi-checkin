@@ -12,7 +12,7 @@ const MAX_HISTORY_RUNS = 120;
 const MAX_HISTORY_DAYS = 90;
 const MAX_EVENTS_PER_RUN = 100;
 const HISTORY_SOURCES = new Set(["gwent", "quiz", "ad"]);
-const DEFAULT_GWENT_INTERVAL_SECONDS = 21_900;
+const DEFAULT_GWENT_INTERVAL_SECONDS = 2 * 60 * 60;
 const MAX_GWENT_INTERVAL_SECONDS = 7 * 24 * 60 * 60;
 const GWENT_LEASE_SECONDS = 15 * 60;
 const MAX_SCHEDULE_TOKEN_LENGTH = 128;
@@ -396,6 +396,7 @@ function emptySchedule() {
     schema_version: 1,
     completed_at: null,
     last_claimed_at: null,
+    last_claimed_token: null,
     last_completed_token: null,
     lease: null,
     updated_at: null,
@@ -432,6 +433,10 @@ function normalizeStoredSchedule(value) {
     value.last_completed_token === null || value.last_completed_token === undefined
       ? null
       : scheduleToken(value.last_completed_token, "last_completed_token", 500);
+  const storedLastClaimedToken =
+    value.last_claimed_token === null || value.last_claimed_token === undefined
+      ? null
+      : scheduleToken(value.last_claimed_token, "last_claimed_token", 500);
   let lease = null;
   if (value.lease !== null && value.lease !== undefined) {
     if (!value.lease || typeof value.lease !== "object" || Array.isArray(value.lease)) {
@@ -457,6 +462,11 @@ function normalizeStoredSchedule(value) {
     schema_version: 1,
     completed_at: completedAt,
     last_claimed_at: lastClaimedAt || (lease === null ? null : lease.claimed_at),
+    // Older schema-v1 documents did not persist last_claimed_token. Derive it
+    // from the lease first so an expired lease cannot replay its slot, then
+    // fall back to the completed token for already-finished runs.
+    last_claimed_token:
+      storedLastClaimedToken || (lease === null ? null : lease.token) || lastCompletedToken,
     last_completed_token: lastCompletedToken,
     lease,
     updated_at:
@@ -525,13 +535,14 @@ function normalizeSchedulePayload(payload) {
   if (payload.min_interval_seconds !== undefined) {
     if (
       !Number.isSafeInteger(payload.min_interval_seconds) ||
-      payload.min_interval_seconds < DEFAULT_GWENT_INTERVAL_SECONDS ||
+      (payload.min_interval_seconds !== 0 &&
+        payload.min_interval_seconds < DEFAULT_GWENT_INTERVAL_SECONDS) ||
       payload.min_interval_seconds > MAX_GWENT_INTERVAL_SECONDS
     ) {
       throw new HttpError(
         400,
         "invalid_schedule",
-        `min_interval_seconds must be at least ${DEFAULT_GWENT_INTERVAL_SECONDS}.`,
+        `min_interval_seconds must be 0 or at least ${DEFAULT_GWENT_INTERVAL_SECONDS}.`,
       );
     }
     normalized.min_interval_seconds = payload.min_interval_seconds;
@@ -613,7 +624,26 @@ async function handleSchedule(request, env, corsOrigin) {
           corsOrigin,
         );
       }
-      // An expired lease cannot block a new scheduled run. It is replaced below.
+      // An expired lease cannot block a different slot, but its token remains
+      // recorded below so the same slot fails closed after a crash.
+    }
+
+    const duplicateSlot = [state.last_claimed_token, state.last_completed_token].some(
+      (token) => token !== null && constantTimeEqual(token, input.lease_token),
+    );
+    if (duplicateSlot) {
+      return jsonResponse(
+        {
+          success: true,
+          due: false,
+          claimed: false,
+          reason: "duplicate_slot",
+          completed_at: state.completed_at,
+          lease_expires_at: null,
+        },
+        200,
+        corsOrigin,
+      );
     }
 
     const completedMs = state.completed_at === null ? null : Date.parse(state.completed_at);
@@ -621,6 +651,7 @@ async function handleSchedule(request, env, corsOrigin) {
     const gateMs = Math.max(completedMs ?? Number.NEGATIVE_INFINITY, claimedMs ?? Number.NEGATIVE_INFINITY);
     if (
       !input.force &&
+      input.min_interval_seconds > 0 &&
       Number.isFinite(gateMs) &&
       nowMs < gateMs + input.min_interval_seconds * 1000
     ) {
@@ -647,6 +678,7 @@ async function handleSchedule(request, env, corsOrigin) {
       schema_version: 1,
       completed_at: state.completed_at,
       last_claimed_at: now,
+      last_claimed_token: input.lease_token,
       last_completed_token: state.last_completed_token,
       lease: {
         token: input.lease_token,
@@ -697,6 +729,7 @@ async function handleSchedule(request, env, corsOrigin) {
     schema_version: 1,
     completed_at: completedAt,
     last_claimed_at: state.last_claimed_at,
+    last_claimed_token: state.last_claimed_token,
     last_completed_token: input.lease_token,
     lease: null,
     updated_at: now,

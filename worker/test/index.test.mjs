@@ -170,7 +170,11 @@ test("schedule claim persists a lease and blocks other runs", async () => {
   const env = { ...defaultEnv, ACTIONS_TOKEN: "actions-secret", CONFIG_KV: kv };
   const claim = await handleRequest(
     scheduleRequest("POST", {
-      body: JSON.stringify({ action: "claim", lease_token: "100:1", min_interval_seconds: 21900 }),
+      body: JSON.stringify({
+        action: "claim",
+        lease_token: "scheduled:20260718T00",
+        min_interval_seconds: 0,
+      }),
     }),
     env,
   );
@@ -181,12 +185,17 @@ test("schedule claim persists a lease and blocks other runs", async () => {
   assert.match(claimBody.lease_expires_at, /^\d{4}-\d{2}-\d{2}T/u);
 
   const stored = JSON.parse(kv.value("gwent-schedule-v1.json"));
-  assert.equal(stored.lease.token, "100:1");
+  assert.equal(stored.lease.token, "scheduled:20260718T00");
   assert.equal(stored.last_claimed_at, stored.lease.claimed_at);
+  assert.equal(stored.last_claimed_token, "scheduled:20260718T00");
 
   const blocked = await handleRequest(
     scheduleRequest("POST", {
-      body: JSON.stringify({ action: "claim", lease_token: "101:1", min_interval_seconds: 21900 }),
+      body: JSON.stringify({
+        action: "claim",
+        lease_token: "scheduled:20260718T02",
+        min_interval_seconds: 0,
+      }),
     }),
     env,
   );
@@ -197,7 +206,11 @@ test("schedule claim persists a lease and blocks other runs", async () => {
 
   const retry = await handleRequest(
     scheduleRequest("POST", {
-      body: JSON.stringify({ action: "claim", lease_token: "100:1", min_interval_seconds: 21900 }),
+      body: JSON.stringify({
+        action: "claim",
+        lease_token: "scheduled:20260718T00",
+        min_interval_seconds: 0,
+      }),
     }),
     env,
   );
@@ -208,17 +221,23 @@ test("schedule claim persists a lease and blocks other runs", async () => {
   assert.equal(retryBody.reused, true);
 });
 
-test("schedule complete validates ownership, is idempotent, and enforces the interval", async () => {
+test("schedule complete validates ownership, is idempotent, and blocks completed slot replay", async () => {
   const kv = mockScheduleKv();
   const env = { ...defaultEnv, ACTIONS_TOKEN: "actions-secret", CONFIG_KV: kv };
   await handleRequest(
-    scheduleRequest("POST", { body: JSON.stringify({ action: "claim", lease_token: "200:1" }) }),
+    scheduleRequest("POST", {
+      body: JSON.stringify({
+        action: "claim",
+        lease_token: "scheduled:20260718T00",
+        min_interval_seconds: 0,
+      }),
+    }),
     env,
   );
 
   const wrong = await handleRequest(
     scheduleRequest("POST", {
-      body: JSON.stringify({ action: "complete", lease_token: "201:1" }),
+      body: JSON.stringify({ action: "complete", lease_token: "scheduled:20260718T02" }),
     }),
     env,
   );
@@ -227,7 +246,7 @@ test("schedule complete validates ownership, is idempotent, and enforces the int
 
   const complete = await handleRequest(
     scheduleRequest("POST", {
-      body: JSON.stringify({ action: "complete", lease_token: "200:1" }),
+      body: JSON.stringify({ action: "complete", lease_token: "scheduled:20260718T00" }),
     }),
     env,
   );
@@ -237,7 +256,7 @@ test("schedule complete validates ownership, is idempotent, and enforces the int
 
   const repeat = await handleRequest(
     scheduleRequest("POST", {
-      body: JSON.stringify({ action: "complete", lease_token: "200:1" }),
+      body: JSON.stringify({ action: "complete", lease_token: "scheduled:20260718T00" }),
     }),
     env,
   );
@@ -245,31 +264,61 @@ test("schedule complete validates ownership, is idempotent, and enforces the int
   assert.equal(repeat.status, 200);
   assert.equal(repeatBody.idempotent, true);
 
-  const tooSoon = await handleRequest(
+  const duplicate = await handleRequest(
     scheduleRequest("POST", {
-      body: JSON.stringify({ action: "claim", lease_token: "202:1", min_interval_seconds: 21900 }),
+      body: JSON.stringify({
+        action: "claim",
+        lease_token: "scheduled:20260718T00",
+        min_interval_seconds: 0,
+      }),
     }),
     env,
   );
-  const tooSoonBody = await tooSoon.json();
-  assert.equal(tooSoon.status, 200);
-  assert.equal(tooSoonBody.due, false);
-  assert.equal(tooSoonBody.reason, "interval");
-  assert.ok(tooSoonBody.retry_after_seconds > 0);
-
-  const forced = await handleRequest(
-    scheduleRequest("POST", {
-      body: JSON.stringify({ action: "claim", lease_token: "202:1", force: true }),
-    }),
-    env,
-  );
-  assert.equal(forced.status, 200);
-  assert.equal((await forced.json()).due, true);
+  const duplicateBody = await duplicate.json();
+  assert.equal(duplicate.status, 200);
+  assert.equal(duplicateBody.due, false);
+  assert.equal(duplicateBody.reason, "duplicate_slot");
 });
 
-test("an expired lease still leaves an interval guard against crash retries", async () => {
+test("a new two-hour slot is due even when the previous run completed recently", async () => {
   const now = Date.now();
-  const claimedAt = new Date(now - 60_000).toISOString();
+  const completedAt = new Date(now - 60_000).toISOString();
+  const claimedAt = new Date(now - 120_000).toISOString();
+  const kv = mockScheduleKv(
+    JSON.stringify({
+      schema_version: 1,
+      completed_at: completedAt,
+      last_claimed_at: claimedAt,
+      last_claimed_token: "scheduled:20260718T00",
+      last_completed_token: "scheduled:20260718T00",
+      lease: null,
+      updated_at: completedAt,
+    }),
+  );
+  const env = { ...defaultEnv, ACTIONS_TOKEN: "actions-secret", CONFIG_KV: kv };
+  const response = await handleRequest(
+    scheduleRequest("POST", {
+      body: JSON.stringify({
+        action: "claim",
+        lease_token: "scheduled:20260718T02",
+        min_interval_seconds: 0,
+      }),
+    }),
+    env,
+  );
+  const body = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(body.due, true);
+  assert.equal(body.claimed, true);
+
+  const stored = JSON.parse(kv.value("gwent-schedule-v1.json"));
+  assert.equal(stored.completed_at, completedAt);
+  assert.equal(stored.last_claimed_token, "scheduled:20260718T02");
+});
+
+test("an expired legacy lease fails closed for the same slot but permits the next slot", async () => {
+  const now = Date.now();
+  const claimedAt = new Date(now - 16 * 60_000).toISOString();
   const kv = mockScheduleKv(
     JSON.stringify({
       schema_version: 1,
@@ -277,24 +326,114 @@ test("an expired lease still leaves an interval guard against crash retries", as
       last_claimed_at: claimedAt,
       last_completed_token: null,
       lease: {
-        token: "300:1",
+        token: "scheduled:20260718T02",
         claimed_at: claimedAt,
-        expires_at: new Date(now - 1_000).toISOString(),
+        expires_at: new Date(now - 60_000).toISOString(),
       },
       updated_at: claimedAt,
     }),
   );
   const env = { ...defaultEnv, ACTIONS_TOKEN: "actions-secret", CONFIG_KV: kv };
+  const duplicate = await handleRequest(
+    scheduleRequest("POST", {
+      body: JSON.stringify({
+        action: "claim",
+        lease_token: "scheduled:20260718T02",
+        min_interval_seconds: 0,
+      }),
+    }),
+    env,
+  );
+  const duplicateBody = await duplicate.json();
+  assert.equal(duplicate.status, 200);
+  assert.equal(duplicateBody.due, false);
+  assert.equal(duplicateBody.reason, "duplicate_slot");
+
+  const nextSlot = await handleRequest(
+    scheduleRequest("POST", {
+      body: JSON.stringify({
+        action: "claim",
+        lease_token: "scheduled:20260718T04",
+        min_interval_seconds: 0,
+      }),
+    }),
+    env,
+  );
+  const nextSlotBody = await nextSlot.json();
+  assert.equal(nextSlot.status, 200);
+  assert.equal(nextSlotBody.due, true);
+  assert.equal(nextSlotBody.claimed, true);
+});
+
+test("old schema-v1 completed state derives the claimed token safely", async () => {
+  const completedAt = new Date(Date.now() - 60_000).toISOString();
+  const kv = mockScheduleKv(
+    JSON.stringify({
+      schema_version: 1,
+      completed_at: completedAt,
+      last_claimed_at: completedAt,
+      last_completed_token: "scheduled:20260718T00",
+      lease: null,
+      updated_at: completedAt,
+    }),
+  );
+  const env = { ...defaultEnv, ACTIONS_TOKEN: "actions-secret", CONFIG_KV: kv };
   const response = await handleRequest(
     scheduleRequest("POST", {
-      body: JSON.stringify({ action: "claim", lease_token: "301:1", min_interval_seconds: 21900 }),
+      body: JSON.stringify({
+        action: "claim",
+        lease_token: "scheduled:20260718T00",
+        min_interval_seconds: 0,
+      }),
     }),
     env,
   );
   const body = await response.json();
   assert.equal(response.status, 200);
   assert.equal(body.due, false);
-  assert.equal(body.reason, "interval");
+  assert.equal(body.reason, "duplicate_slot");
+});
+
+test("legacy clients default to two hours and manual force can bypass the interval", async () => {
+  const now = new Date().toISOString();
+  const kv = mockScheduleKv(
+    JSON.stringify({
+      schema_version: 1,
+      completed_at: now,
+      last_claimed_at: now,
+      last_claimed_token: "legacy:200",
+      last_completed_token: "legacy:200",
+      lease: null,
+      updated_at: now,
+    }),
+  );
+  const env = { ...defaultEnv, ACTIONS_TOKEN: "actions-secret", CONFIG_KV: kv };
+  const tooSoon = await handleRequest(
+    scheduleRequest("POST", {
+      body: JSON.stringify({
+        action: "claim",
+        lease_token: "legacy:201",
+      }),
+    }),
+    env,
+  );
+  const tooSoonBody = await tooSoon.json();
+  assert.equal(tooSoon.status, 200);
+  assert.equal(tooSoonBody.due, false);
+  assert.equal(tooSoonBody.reason, "interval");
+  assert.ok(tooSoonBody.retry_after_seconds >= 7199);
+  assert.ok(tooSoonBody.retry_after_seconds <= 7200);
+
+  const forced = await handleRequest(
+    scheduleRequest("POST", {
+      body: JSON.stringify({ action: "claim", lease_token: "manual:20260718T0205", force: true }),
+    }),
+    env,
+  );
+  assert.equal(forced.status, 200);
+  const forcedBody = await forced.json();
+  assert.equal(forcedBody.due, true);
+  assert.equal(forcedBody.claimed, true);
 });
 
 test("schedule rejects malformed payloads and fails closed on corrupt state", async () => {
@@ -313,7 +452,7 @@ test("schedule rejects malformed payloads and fails closed on corrupt state", as
       body: JSON.stringify({
         action: "claim",
         lease_token: "401:1",
-        min_interval_seconds: 0,
+        min_interval_seconds: 7199,
       }),
     }),
     env,

@@ -15,18 +15,24 @@ test("quiz and ad workflows use the intended Beijing schedules", () => {
   assert.match(ad, /vsllm_tasks\.py --task ad/u);
 });
 
-test("all VSLLM workflows share serialization and redact credentials", () => {
+test("all VSLLM workflows share serialization and publish redacted task-draw history", () => {
   for (const workflow of [quiz, ad, checkin, gwent]) {
     assert.match(workflow, /group:\s*vsllm-tasks-\$\{\{ github\.repository \}\}/u);
   }
   for (const workflow of [quiz, ad]) {
     assert.match(workflow, /CONFIG_AUTH/u);
     assert.match(workflow, /NEWAPI_ACCOUNTS/u);
+    assert.match(workflow, /HISTORY_URL:\s*https:\/\/newapi-sync\.mornye\.uk\/api\/gwent\/history/u);
+    assert.match(workflow, /HISTORY_AUTH:\s*\$\{\{\s*secrets\.ACTIONS_TOKEN\s*\|\|\s*secrets\.CONFIG_AUTH\s*\}\}/u);
+    assert.match(workflow, /HISTORY_REQUIRED:\s*['"]true['"]/u);
+    assert.ok((workflow.match(/HISTORY_URL/gu) || []).length >= 2);
+    assert.ok((workflow.match(/HISTORY_AUTH/gu) || []).length >= 2);
     assert.match(workflow, /text\.replace\(value, "\*\*\*"\)/u);
   }
   assert.doesNotMatch(runner, /ACCOUNTS_JSON/u);
-  assert.doesNotMatch(runner, /share_unlock|gwent_draw\(/u);
-  assert.match(runner, /report_charge_balance/u);
+  assert.match(runner, /gwent_draw\(/u);
+  assert.match(runner, /publish_gwent_history/u);
+  assert.match(runner, /task_type/u);
 });
 
 test("task runner keeps unknown quiz responses fail-closed", () => {

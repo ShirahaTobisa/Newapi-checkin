@@ -1,9 +1,9 @@
 name: 维云自动翻牌
 
 on:
-  # 北京时间 01:05、07:05、13:05、19:05；Worker 租约继续保护真实间隔。
+  # Cloudflare/GitHub Cron 使用 UTC；UTC 与北京时间均为每个偶数整点。
   schedule:
-    - cron: '5 5,11,17,23 * * *'
+    - cron: '0 */2 * * *'
   workflow_dispatch:
 
 concurrency:
@@ -25,8 +25,8 @@ jobs:
         env:
           SCHEDULE_URL: https://newapi-sync.mornye.uk/api/gwent/schedule
           ACTIONS_TOKEN: ${{ secrets.ACTIONS_TOKEN || secrets.CONFIG_AUTH }}
-          MIN_INTERVAL_SECONDS: '21900'
-          FORCE: ${{ github.event_name == 'workflow_dispatch' }}
+          EVENT_NAME: ${{ github.event_name }}
+          MIN_INTERVAL_SECONDS: '0'
         run: |
           set -u
           # Default to a closed gate. The worker owns the durable cooldown and
@@ -45,11 +45,21 @@ jobs:
             exit 0
           fi
 
-          lease_token="${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT}"
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            lease_token="manual:${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT}"
+            force=true
+          else
+            utc_stamp="$(date -u +%Y%m%d%H)"
+            slot_date="${utc_stamp:0:8}"
+            utc_hour="${utc_stamp:8:2}"
+            slot_hour=$((10#$utc_hour / 2 * 2))
+            printf -v lease_token 'scheduled:%sT%02d' "$slot_date" "$slot_hour"
+            force=false
+          fi
           payload="$(jq -cn \
             --arg lease "$lease_token" \
             --argjson min_interval "${MIN_INTERVAL_SECONDS}" \
-            --argjson force "${FORCE:-false}" \
+            --argjson force "$force" \
             '{action:"claim", lease_token:$lease, min_interval_seconds:$min_interval, force:$force}')"
 
           response_file="$(mktemp)"
@@ -80,8 +90,8 @@ jobs:
             echo "lease_token=${lease_token}" >> "$GITHUB_OUTPUT"
             echo "已获取翻牌调度租约，开始执行本轮任务"
           else
-            retry_after="$(jq -r '.retry_after_seconds // empty | tostring' "$response_file" 2>/dev/null || true)"
-            echo "距下一次翻牌资格尚未达到保护间隔${retry_after:+，预计还需 ${retry_after} 秒}"
+            reason="$(jq -r '.reason // "slot_not_due"' "$response_file" 2>/dev/null || true)"
+            echo "当前两小时槽位无需重复翻牌（${reason}）"
           fi
 
   gwent:
@@ -115,12 +125,12 @@ jobs:
       - name: 安装依赖
         run: pip install -r requirements.txt
 
-      - name: 执行三次翻牌并记录日志
+      - name: 执行一次翻牌并记录日志
         id: gwent
         shell: bash
         env:
           TASK_MODE: gwent
-          GWENT_DRAW_COUNT: '3'
+          GWENT_DRAW_COUNT: '1'
           CONFIG_URL: ${{ secrets.CONFIG_URL }}
           CONFIG_AUTH: ${{ secrets.CONFIG_AUTH }}
           NEWAPI_ACCOUNTS: ${{ secrets.NEWAPI_ACCOUNTS }}
@@ -128,7 +138,7 @@ jobs:
           HISTORY_AUTH: ${{ secrets.ACTIONS_TOKEN || secrets.CONFIG_AUTH }}
           HISTORY_REQUIRED: 'true'
           GWENT_SCHEDULE_GUARD: 'true'
-          GWENT_MIN_INTERVAL_SECONDS: '21900'
+          GWENT_MIN_INTERVAL_SECONDS: '0'
           GWENT_FORCE: ${{ github.event_name == 'workflow_dispatch' }}
         run: |
           set +e
@@ -200,17 +210,18 @@ jobs:
             echo "::warning::完成翻牌调度租约失败（HTTP ${http_code:-network}）${detail:+：$detail}"
             exit 0
           fi
-          echo "翻牌调度租约已完成，下一轮将从完成时间重新计算保护间隔"
+          echo "翻牌调度租约已完成，下一轮由新的 UTC 两小时槽位判断"
 
       - name: 写入 Actions 摘要
         if: always()
         shell: bash
         run: |
           {
-            echo "## 维云翻牌记录（间隔保护：6 小时 5 分钟）"
+            echo "## 维云翻牌记录（每 2 小时整点翻 1 次）"
             echo
             echo "- 日期（北京时间）：${LOG_DATE}"
-            echo "- 每个账号计划翻牌：3 次"
+            echo "- 每个账号计划翻牌：1 次"
+            echo "- 防重策略：Worker 槽位防重"
             echo "- 工作流运行：#${GITHUB_RUN_NUMBER}（尝试 ${GITHUB_RUN_ATTEMPT}）"
             echo "- 翻牌步骤结果：${{ steps.gwent.outcome }}"
             echo

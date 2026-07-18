@@ -40,13 +40,16 @@ jobs:
       - name: 安装依赖
         run: pip install -r requirements.txt
 
-      - name: 执行广告任务并记录日志
+      - name: 执行广告任务及奖励翻牌并记录日志
         id: ad
         shell: bash
         env:
           CONFIG_URL: ${{ secrets.CONFIG_URL }}
           CONFIG_AUTH: ${{ secrets.CONFIG_AUTH }}
           NEWAPI_ACCOUNTS: ${{ secrets.NEWAPI_ACCOUNTS }}
+          HISTORY_URL: https://newapi-sync.mornye.uk/api/gwent/history
+          HISTORY_AUTH: ${{ secrets.ACTIONS_TOKEN || secrets.CONFIG_AUTH }}
+          HISTORY_REQUIRED: 'true'
         run: |
           set +e
           python -u vsllm_tasks.py --task ad 2>&1 | tee "$LOG_FILE"
@@ -63,6 +66,8 @@ jobs:
               "CONFIG_URL",
               "CONFIG_AUTH",
               "NEWAPI_ACCOUNTS",
+              "HISTORY_URL",
+              "HISTORY_AUTH",
           ):
               value = os.environ.get(name, "")
               if value:
@@ -77,9 +82,10 @@ jobs:
         shell: bash
         run: |
           {
-            echo "## 维云广告任务记录"
+            echo "## 维云视频任务与奖励翻牌记录"
             echo
             echo "- 日期（北京时间）：${LOG_DATE}"
+            echo "- 每次奖励成功后：立即翻牌 1 次（每天最多 3 次）"
             echo "- 工作流运行：#${GITHUB_RUN_NUMBER}（尝试 ${GITHUB_RUN_ATTEMPT}）"
             echo "- 广告步骤结果：${{ steps.ad.outcome }}"
             echo

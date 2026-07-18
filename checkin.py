@@ -18,7 +18,7 @@ from typing import Optional
 from urllib.parse import urlparse
 
 
-GWENT_MIN_INTERVAL_SECONDS = 6 * 60 * 60 + 5 * 60
+GWENT_MIN_INTERVAL_SECONDS = 2 * 60 * 60
 
 try:
     from cf_bypass import detect_cloudflare_block, CloudflareBypasser
@@ -736,6 +736,10 @@ def load_gwent_last_success(history_url: str) -> dict:
     for event in data.get('events') or []:
         if not isinstance(event, dict) or event.get('status') != 'success':
             continue
+        # 答题和广告奖励会各自触发一次即时翻牌；它们不能推迟常规
+        # 两小时翻牌。旧记录没有 task_type 时按常规翻牌兼容处理。
+        if (event.get('task_type') or 'gwent') != 'gwent':
+            continue
         account_key = event.get('account_key')
         occurred_at = parse_utc_timestamp(event.get('occurred_at'))
         if not isinstance(account_key, str) or occurred_at is None:
@@ -840,23 +844,26 @@ def run_gwent_tasks(accounts: list, draw_count: int) -> bool:
         and os.environ.get('GWENT_FORCE', '').strip().lower() != 'true'
     )
     if schedule_guard_enabled:
-        try:
-            last_success = load_gwent_last_success(os.environ.get('HISTORY_URL', '').strip())
-        except RuntimeError as error:
-            print(f'[调度] 无法确认上次翻牌时间，本轮停止：{error}')
-            return False
         interval_raw = os.environ.get('GWENT_MIN_INTERVAL_SECONDS', '').strip()
         try:
             min_interval = max(0, int(interval_raw)) if interval_raw else GWENT_MIN_INTERVAL_SECONDS
         except ValueError:
             min_interval = GWENT_MIN_INTERVAL_SECONDS
-        targets, skipped = filter_gwent_targets(targets, last_success, min_interval)
-        for (_index, account, _client), remaining in skipped:
-            name = account.get('name') or '未命名账号'
-            minutes = max(1, math.ceil(remaining / 60))
-            print(f'[调度] {name} 距上次成功翻牌还需约 {minutes} 分钟，本轮跳过')
+        if min_interval > 0:
+            try:
+                last_success = load_gwent_last_success(os.environ.get('HISTORY_URL', '').strip())
+            except RuntimeError as error:
+                print(f'[调度] 无法确认上次翻牌时间，本轮停止：{error}')
+                return False
+            targets, skipped = filter_gwent_targets(targets, last_success, min_interval)
+            for (_index, account, _client), remaining in skipped:
+                name = account.get('name') or '未命名账号'
+                minutes = max(1, math.ceil(remaining / 60))
+                print(f'[调度] {name} 距上次成功翻牌还需约 {minutes} 分钟，本轮跳过')
+        else:
+            print('[调度] Worker 两小时槽位已放行，本地不再按完成时间重复限流')
     elif os.environ.get('GWENT_SCHEDULE_GUARD', '').strip().lower() == 'true':
-        print('[调度] 手动运行绕过 6 小时 5 分钟保护')
+        print('[调度] 手动运行绕过 2 小时间隔保护')
 
     print(f'共 {len(targets)} 个维云账号待翻牌，每个最多 {draw_count} 次\n')
     if not targets:
@@ -924,6 +931,7 @@ def run_gwent_tasks(accounts: list, draw_count: int) -> bool:
                 'prize_rarity': rarity,
                 'bonus_percent': bonus_percent,
                 'message': str(result.get('message', ''))[:240] or None,
+                'task_type': 'gwent',
             })
 
         run_total_quota += total_quota
@@ -1003,7 +1011,7 @@ def main():
 
     if task_mode == 'gwent':
         try:
-            draw_count = max(1, min(10, int(os.environ.get('GWENT_DRAW_COUNT', '3'))))
+            draw_count = max(1, min(10, int(os.environ.get('GWENT_DRAW_COUNT', '1'))))
         except ValueError:
             print('[错误] GWENT_DRAW_COUNT 必须是整数')
             sys.exit(1)

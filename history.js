@@ -3,7 +3,6 @@
 
   const API_URL = "https://newapi-sync.mornye.uk/api/gwent/history";
   const MAX_VISIBLE_EVENTS = 100;
-  const MIN_DRAW_INTERVAL_MS = (6 * 60 + 5) * 60 * 1000;
   const numberFormat = new Intl.NumberFormat("zh-CN");
   const compactFormat = new Intl.NumberFormat("zh-CN", {
     notation: "compact",
@@ -75,6 +74,14 @@
     })[rarity] || "--";
   }
 
+  function taskTypeLabel(taskType) {
+    return ({
+      gwent: "常规",
+      quiz: "答题",
+      ad: "视频",
+    })[taskType || "gwent"] || "其他";
+  }
+
   function renderIcons() {
     if (window.lucide) window.lucide.createIcons({ attrs: { "aria-hidden": "true" } });
   }
@@ -110,7 +117,7 @@
       elements.updatedAt.textContent = "尚未更新";
       return;
     }
-    const stale = Date.now() - parsed > 7 * 60 * 60 * 1000;
+    const stale = Date.now() - parsed > 3 * 60 * 60 * 1000;
     elements.freshness.className = `status-badge ${stale ? "status-stale" : "status-success"}`;
     elements.freshness.textContent = stale ? "数据可能过期" : "数据正常";
     elements.updatedAt.textContent = `更新于 ${formatDateTime(updatedAt)}`;
@@ -168,37 +175,20 @@
   }
 
   function nextCronWindow(now = new Date()) {
-    const hours = [5, 11, 17, 23];
-    for (let dayOffset = 0; dayOffset < 3; dayOffset += 1) {
-      for (const hour of hours) {
-        const candidate = new Date(Date.UTC(
-          now.getUTCFullYear(),
-          now.getUTCMonth(),
-          now.getUTCDate() + dayOffset,
-          hour,
-          5,
-        ));
-        if (candidate > now) return candidate;
-      }
-    }
-    return new Date(now.getTime() + 6 * 60 * 60 * 1000);
+    const candidate = new Date(now);
+    candidate.setUTCMinutes(0, 0, 0);
+    candidate.setUTCHours(Math.floor(candidate.getUTCHours() / 2) * 2);
+    if (candidate <= now) candidate.setUTCHours(candidate.getUTCHours() + 2);
+    return candidate;
   }
 
-  function nextCheckAt(value) {
-    return nextCronWindow(value);
-  }
-
-  function nextScheduledRun(latest, now = new Date()) {
-    const finishedAt = latest && Date.parse(latest.finished_at);
-    if (!Number.isFinite(finishedAt)) return nextCronWindow(now);
-    const eligible = new Date(finishedAt + MIN_DRAW_INTERVAL_MS);
-    return eligible > now ? nextCheckAt(eligible) : nextCronWindow(now);
+  function nextScheduledRun(now = new Date()) {
+    return nextCronWindow(now);
   }
 
   function renderSchedule(runs) {
-    const latest = runs[0];
-    const latestGwent = runs.find((run) => (run.source || "gwent") === "gwent");
-    const nextRun = nextScheduledRun(latestGwent);
+    const latest = runs.find((run) => (run.source || "gwent") === "gwent");
+    const nextRun = nextScheduledRun();
     setText("next-run", nextRun ? formatDateTime(nextRun.toISOString()) : "--");
     if (!latest) {
       setText("last-run", "--");
@@ -325,6 +315,8 @@
       time.textContent = formatDateTime(event.occurred_at);
       const accountCell = document.createElement("td");
       accountCell.textContent = event.account_name || "未知账号";
+      const source = document.createElement("td");
+      source.textContent = taskTypeLabel(event.task_type);
       const attempt = document.createElement("td");
       attempt.className = "number-cell";
       attempt.textContent = String(event.attempt || "--");
@@ -347,7 +339,7 @@
       const bonus = document.createElement("td");
       bonus.className = "number-cell";
       bonus.textContent = safeNumber(event.bonus_percent) ? `+${formatNumber(event.bonus_percent)}%` : "--";
-      row.append(time, accountCell, attempt, result, quota, rarity, bonus);
+      row.append(time, accountCell, source, attempt, result, quota, rarity, bonus);
       fragment.append(row);
     });
     tbody.append(fragment);

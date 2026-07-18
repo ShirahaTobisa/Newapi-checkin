@@ -149,7 +149,7 @@ class GwentDrawTest(unittest.TestCase):
         self.assertEqual(gwent_event_status({'message': 'Session 认证失败'}), 'auth')
         self.assertEqual(gwent_event_status({'message': '网络错误'}), 'error')
 
-    def test_schedule_guard_skips_until_six_hours_and_five_minutes(self):
+    def test_schedule_guard_skips_until_two_hours(self):
         account = {'url': 'https://vsllm.com', 'user_id': '6200', 'name': '账号3'}
         target = (3, account, Mock())
         now = datetime(2026, 7, 18, 0, 0, tzinfo=timezone.utc)
@@ -157,7 +157,7 @@ class GwentDrawTest(unittest.TestCase):
 
         eligible, skipped = filter_gwent_targets(
             [target],
-            {key: now - timedelta(hours=6, minutes=4, seconds=59)},
+            {key: now - timedelta(hours=1, minutes=59, seconds=59)},
             now=now,
         )
         self.assertEqual(eligible, [])
@@ -165,7 +165,7 @@ class GwentDrawTest(unittest.TestCase):
 
         eligible, skipped = filter_gwent_targets(
             [target],
-            {key: now - timedelta(hours=6, minutes=5)},
+            {key: now - timedelta(hours=2)},
             now=now,
         )
         self.assertEqual(eligible, [target])
@@ -178,6 +178,8 @@ class GwentDrawTest(unittest.TestCase):
             'events': [
                 {'account_key': 'aaaaaaaaaaaaaaaa', 'status': 'success', 'occurred_at': '2026-07-17T10:00:00Z'},
                 {'account_key': 'aaaaaaaaaaaaaaaa', 'status': 'cooldown', 'occurred_at': '2026-07-17T11:00:00Z'},
+                {'account_key': 'aaaaaaaaaaaaaaaa', 'status': 'success', 'task_type': 'quiz', 'occurred_at': '2026-07-17T13:00:00Z'},
+                {'account_key': 'aaaaaaaaaaaaaaaa', 'status': 'success', 'task_type': 'ad', 'occurred_at': '2026-07-17T14:00:00Z'},
                 {'account_key': 'aaaaaaaaaaaaaaaa', 'status': 'success', 'occurred_at': '2026-07-17T12:00:00Z'},
             ],
         })
@@ -209,16 +211,50 @@ class GwentDrawTest(unittest.TestCase):
         with patch.dict('os.environ', {
             'GWENT_SCHEDULE_GUARD': 'true',
             'GWENT_FORCE': 'false',
-            'GWENT_MIN_INTERVAL_SECONDS': '21900',
+            'GWENT_MIN_INTERVAL_SECONDS': '7200',
             'HISTORY_URL': 'https://relay.example/api/gwent/history',
         }, clear=False):
             self.assertTrue(run_gwent_tasks([account], 3))
 
         client.gwent_draw_many.assert_not_called()
 
+    @patch('checkin.load_gwent_last_success')
     @patch('checkin.publish_gwent_history', return_value=True)
     @patch('checkin.NewAPICheckin')
-    def test_partial_run_prints_account_and_global_quota(self, client_class, _publish):
+    def test_worker_slot_mode_does_not_depend_on_history_read(
+        self, client_class, _publish, load_history
+    ):
+        account = {'url': 'https://vsllm.com', 'session': 'test-session', 'user_id': '123', 'name': '主账号'}
+        client = client_class.return_value
+        client.is_vsllm.return_value = True
+        client.get_user_info.return_value = None
+        client.gwent_draw_many.return_value = [{
+            'success': True,
+            'unlock_success': True,
+            'unlock_message': '已激活',
+            'message': '翻牌成功',
+            'prize_name': '测试卡',
+            'prize_quota': 10,
+            'prize_rarity': 'common',
+            'bonus_percent': 50,
+        }]
+
+        with patch.dict('os.environ', {
+            'GWENT_SCHEDULE_GUARD': 'true',
+            'GWENT_FORCE': 'false',
+            'GWENT_MIN_INTERVAL_SECONDS': '0',
+            'HISTORY_URL': 'https://relay.example/api/gwent/history',
+            'HISTORY_AUTH': 'token:history-secret',
+            'HISTORY_REQUIRED': 'true',
+        }, clear=False), redirect_stdout(StringIO()):
+            self.assertTrue(run_gwent_tasks([account], 1))
+
+        load_history.assert_not_called()
+        client.gwent_draw_many.assert_called_once_with(1)
+
+    @patch('checkin.publish_gwent_history', return_value=True)
+    @patch('checkin.NewAPICheckin')
+    def test_partial_run_prints_account_and_global_quota(self, client_class, publish):
         account = {'url': 'https://vsllm.com', 'session': 'test-session', 'user_id': '123', 'name': '主账号'}
         client = client_class.return_value
         client.is_vsllm.return_value = True
@@ -268,6 +304,9 @@ class GwentDrawTest(unittest.TestCase):
         text = output.getvalue()
         self.assertIn('本轮额度 +300', text)
         self.assertIn('本轮所有账号额度: +300', text)
+        payload = publish.call_args.args[0]
+        self.assertTrue(payload['events'])
+        self.assertTrue(all(event['task_type'] == 'gwent' for event in payload['events']))
 
     @patch('checkin.publish_gwent_history', return_value=True)
     @patch('checkin.NewAPICheckin')

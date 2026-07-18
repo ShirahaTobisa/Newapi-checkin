@@ -2,8 +2,7 @@
 # -*- coding: utf-8 -*-
 """维云答题和广告任务。
 
-这些任务只负责领取额外翻牌次数。翻牌本身由独立的 6 小时 5 分钟
-工作流统一执行，避免在领取奖励时提前消耗次数。
+答题或广告奖励领取成功后立即翻牌一次，并把每次翻牌尝试写入历史记录。
 """
 
 from __future__ import annotations
@@ -21,8 +20,14 @@ import requests
 
 from checkin import (
     NewAPICheckin,
+    gwent_event_status,
+    history_account_key,
     load_config_from_cloud,
+    normalize_gwent_bonus_percent,
+    normalize_gwent_quota,
     parse_accounts,
+    publish_gwent_history,
+    utc_timestamp,
 )
 
 
@@ -261,28 +266,99 @@ def task_status(client: NewAPICheckin, task_key: str) -> tuple[Optional[dict], O
     return task, None
 
 
-def report_charge_balance(client: NewAPICheckin, reason: str) -> dict:
-    """记录奖励后的可用次数，但不消费次数。"""
+def draw_one_after_reward(client: NewAPICheckin, reason: str) -> dict:
+    """奖励到账后立即翻牌一次，并把响应规范化供日志和历史记录使用。"""
     try:
-        status = client.gwent_status()
+        raw_result = client.gwent_draw()
     except Exception as error:  # pragma: no cover - defensive boundary for client implementations
-        print(f"  {reason}成功；翻牌次数已保留给定时翻牌（余额读取异常: {type(error).__name__}）")
-        return {"success": False, "available": None}
-    available = status.get("available") if status.get("success") else None
-    if available is None:
-        print(f"  {reason}成功；翻牌次数已保留给定时翻牌（当前余额暂无法读取）")
-        return {"success": False, "available": None}
+        raw_result = {
+            "success": False,
+            "message": f"翻牌请求异常: {type(error).__name__}",
+        }
+    if not isinstance(raw_result, dict):
+        raw_result = {"success": False, "message": "翻牌接口返回格式异常"}
 
-    charges_current = status.get("charges_current")
-    extra_draws_left = status.get("extra_draws_left")
-    details = []
-    if charges_current is not None:
-        details.append(f"基础 {charges_current}")
-    if extra_draws_left is not None:
-        details.append(f"额外 {extra_draws_left}")
-    suffix = f"（{'，'.join(details)}）" if details else ""
-    print(f"  {reason}成功；当前可用翻牌次数: {available}{suffix}，由定时翻牌工作流消费")
-    return status
+    status = gwent_event_status(raw_result)
+    prize_name = str(raw_result.get("prize_name") or "未知奖品")[:80]
+    prize_quota = normalize_gwent_quota(raw_result.get("prize_quota"))
+    prize_rarity = str(raw_result.get("prize_rarity") or "unknown").lower()
+    if prize_rarity not in {"common", "rare", "epic", "legendary"}:
+        prize_rarity = "unknown"
+    bonus_percent = normalize_gwent_bonus_percent(raw_result.get("bonus_percent"))
+    message = _safe_message(raw_result.get("message"), "翻牌成功" if status == "success" else "翻牌失败")
+
+    if status == "success":
+        print(
+            f"  {reason}翻牌: OK {prize_name} (+{prize_quota:,} 额度，"
+            f"加成 {bonus_percent}%)"
+        )
+    elif status == "cooldown":
+        print(f"  {reason}翻牌: WAIT {message}")
+    else:
+        print(f"  {reason}翻牌: FAIL {message}")
+
+    return {
+        "ok": status == "success",
+        "status": status,
+        "message": message,
+        "prize_name": prize_name if status == "success" else None,
+        "prize_quota": prize_quota,
+        "prize_rarity": prize_rarity,
+        "bonus_percent": bonus_percent,
+        "draw": raw_result,
+    }
+
+
+def _history_event(
+    task_type: str,
+    run_id: str,
+    index: int,
+    account: dict,
+    draw: dict,
+) -> dict:
+    account_key = history_account_key(account, index)
+    return {
+        "event_id": f"{run_id}:{account_key}:1",
+        "account_key": account_key,
+        "account_name": str(account.get("name") or f"账号{index}")[:64],
+        "attempt": 1,
+        "occurred_at": utc_timestamp(),
+        "status": draw.get("status", "error"),
+        "prize_name": draw.get("prize_name"),
+        "prize_quota": max(0, normalize_gwent_quota(draw.get("prize_quota"))),
+        "prize_rarity": draw.get("prize_rarity", "unknown"),
+        "bonus_percent": max(0, normalize_gwent_bonus_percent(draw.get("bonus_percent"))),
+        "message": _safe_message(draw.get("message")) or None,
+        "task_type": task_type,
+    }
+
+
+def _publish_task_draws(
+    task_type: str,
+    run_id: str,
+    run_number: int,
+    run_attempt: int,
+    started_at: str,
+    events: list[dict],
+    status: str,
+) -> bool:
+    if not events:
+        print("[历史] 本轮没有实际翻牌尝试，跳过历史上报")
+        return True
+    return publish_gwent_history({
+        "schema_version": 1,
+        "run": {
+            "run_id": run_id,
+            "run_number": run_number,
+            "run_attempt": run_attempt,
+            "started_at": started_at,
+            "finished_at": utc_timestamp(),
+            "planned_draws": 1,
+            "status": status,
+            "source": task_type,
+        },
+        "events": events,
+    })
 
 
 def _load_accounts() -> list[dict]:
@@ -313,7 +389,7 @@ def _run_identity(task_type: str) -> tuple[str, int, int]:
     return f"{task_type}:{run_id}:{run_attempt}", run_number, run_attempt
 
 
-def _quiz_account(index: int, account: dict, client: NewAPICheckin, _events: list[dict], _run_id: str) -> dict:
+def _quiz_account(index: int, account: dict, client: NewAPICheckin, events: list[dict], run_id: str) -> dict:
     name = account.get("name") or f"账号{index}"
     print(f"[{name}] 每日答题")
     task, error = task_status(client, "task3")
@@ -344,15 +420,23 @@ def _quiz_account(index: int, account: dict, client: NewAPICheckin, _events: lis
         message = str(quiz.get("error") or "答题失败")
         return {"ok": False, "reason": message, "attempts": quiz.get("attempts", [])}
 
-    charge_status = report_charge_balance(client, "答题奖励")
+    draw = draw_one_after_reward(client, "答题奖励")
+    events.append(_history_event("quiz", run_id, index, account, draw))
+    if not draw.get("ok"):
+        return {
+            "ok": False,
+            "reason": f"答题成功但奖励翻牌失败：{draw.get('message') or '未知错误'}",
+            "attempts": quiz.get("attempts", []),
+            "draw": draw,
+        }
     return {
         "ok": True,
         "attempts": quiz.get("attempts", []),
-        "charge_status": charge_status,
+        "draw": draw,
     }
 
 
-def _ad_account(index: int, account: dict, client: NewAPICheckin, _events: list[dict], _run_id: str) -> dict:
+def _ad_account(index: int, account: dict, client: NewAPICheckin, events: list[dict], run_id: str) -> dict:
     name = account.get("name") or f"账号{index}"
     print(f"[{name}] 观看广告")
     task, error = task_status(client, "task2")
@@ -363,10 +447,11 @@ def _ad_account(index: int, account: dict, client: NewAPICheckin, _events: list[
         return {"ok": True, "skipped": True, "reason": "ad_task_unavailable"}
 
     done_count = _safe_int(task.get("done_count"))
-    daily_cap = _safe_int(task.get("daily_cap"), minimum=1)
+    server_daily_cap = _safe_int(task.get("daily_cap"), minimum=1) or 3
+    daily_cap = min(server_daily_cap, 3)
     next_available_raw = task.get("next_available_at", 0)
     next_available = 0 if next_available_raw in (None, "") else _safe_int(next_available_raw, minimum=0)
-    if done_count is None or daily_cap is None or next_available is None:
+    if done_count is None or next_available is None:
         message = "广告任务状态字段缺失或格式错误"
         return {"ok": False, "reason": message}
     if done_count >= daily_cap:
@@ -397,15 +482,24 @@ def _ad_account(index: int, account: dict, client: NewAPICheckin, _events: list[
         message = "领取广告充能失败"
         return {"ok": False, "reason": message}
 
-    charge_status = report_charge_balance(client, "广告充能")
-    return {"ok": True, "duration_sec": duration, "charge_status": charge_status}
+    draw = draw_one_after_reward(client, "广告奖励")
+    events.append(_history_event("ad", run_id, index, account, draw))
+    if not draw.get("ok"):
+        return {
+            "ok": False,
+            "reason": f"广告充能成功但奖励翻牌失败：{draw.get('message') or '未知错误'}",
+            "duration_sec": duration,
+            "draw": draw,
+        }
+    return {"ok": True, "duration_sec": duration, "draw": draw}
 
 
 def run_task(task_type: str) -> bool:
     if task_type not in TASK_TYPES:
         raise ValueError(f"不支持的任务类型: {task_type}")
     accounts = _load_accounts()
-    run_id, _run_number, _run_attempt = _run_identity(task_type)
+    run_id, run_number, run_attempt = _run_identity(task_type)
+    started_at = utc_timestamp()
     events: list[dict] = []
     results: list[dict] = []
     runner = _quiz_account if task_type == "quiz" else _ad_account
@@ -422,19 +516,29 @@ def run_task(task_type: str) -> bool:
         results.append(runner(index, account, client, events, run_id))
 
     failed = sum(1 for result in results if not result.get("ok"))
-    executed = sum(1 for result in results if not result.get("skipped"))
-    success = len(results) - failed
-    readable_balances = sum(
-        1
-        for result in results
-        if isinstance(result.get("charge_status"), dict)
-        and result["charge_status"].get("available") is not None
+    skipped = sum(1 for result in results if result.get("skipped"))
+    succeeded = sum(1 for result in results if result.get("ok") and not result.get("skipped"))
+    total_quota = sum(
+        normalize_gwent_quota(event.get("prize_quota"))
+        for event in events
+        if event.get("status") == "success"
     )
     print("=" * 50)
-    print(f"任务完成: 成功 {success}, 失败 {failed}, 跳过 {len(results) - executed}")
-    print(f"已完成奖励领取；{readable_balances}/{len(results)} 个账号读取到当前可用翻牌次数")
+    print(f"任务完成: 成功 {succeeded}, 失败 {failed}, 跳过 {skipped}")
+    print(f"本轮奖励翻牌总额度: +{total_quota:,}")
     print("=" * 50)
-    return failed == 0
+
+    history_status = "success" if failed == 0 else ("partial" if succeeded > 0 else "error")
+    history_saved = _publish_task_draws(
+        task_type,
+        run_id,
+        run_number,
+        run_attempt,
+        started_at,
+        events,
+        history_status,
+    )
+    return failed == 0 and history_saved
 
 
 def main() -> None:

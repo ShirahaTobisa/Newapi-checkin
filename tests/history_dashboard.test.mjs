@@ -22,11 +22,36 @@ test("dashboard provides responsive, loading, empty, error, and stale states", (
   assert.match(css, /\.is-loading/u);
   assert.match(html, /id="events-empty"/u);
   assert.match(html, /id="error-banner"/u);
-  assert.match(html, /每 6 小时 05 分触发/u);
-  assert.match(html, /Worker 租约保护/u);
-  assert.match(html, /6 小时 05 分/u);
-  assert.match(script, /MIN_DRAW_INTERVAL_MS/u);
+  assert.match(html, /每 2 小时整点翻 1 次/u);
+  assert.match(html, /Worker 槽位防重/u);
+  assert.match(html, /最近常规翻牌/u);
+  assert.doesNotMatch(script, /MIN_DRAW_INTERVAL_MS|finishedAt/u);
+  assert.match(script, /> 3 \* 60 \* 60 \* 1000/u);
   assert.match(script, /status-stale/u);
+});
+
+test("dashboard calculates the next regular run from UTC even-hour slots", () => {
+  const start = script.indexOf("  function nextCronWindow");
+  const end = script.indexOf("\n\n  function nextScheduledRun", start);
+  assert.ok(start >= 0 && end > start);
+  const nextCronWindow = new Function(`${script.slice(start, end)}\nreturn nextCronWindow;`)();
+
+  assert.equal(
+    nextCronWindow(new Date("2026-07-18T00:03:00.000Z")).toISOString(),
+    "2026-07-18T02:00:00.000Z",
+  );
+  assert.equal(
+    nextCronWindow(new Date("2026-07-18T23:59:59.000Z")).toISOString(),
+    "2026-07-19T00:00:00.000Z",
+  );
+});
+
+test("recent draw records identify regular, quiz, and video sources", () => {
+  assert.match(html, /<th scope="col">来源<\/th>/u);
+  assert.match(script, /gwent:\s*"常规"/u);
+  assert.match(script, /quiz:\s*"答题"/u);
+  assert.match(script, /ad:\s*"视频"/u);
+  assert.match(script, /taskTypeLabel\(event\.task_type\)/u);
 });
 
 test("dashboard uses restrained panel geometry", () => {
