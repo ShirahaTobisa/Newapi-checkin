@@ -481,6 +481,8 @@
     for (const control of elements.accountsForm.querySelectorAll("input, button")) {
       control.disabled = busy;
     }
+    elements.addButton.disabled = busy;
+    elements.emptyAddButton.disabled = busy;
     elements.logoutButton.disabled = busy;
     setButtonLoading(elements.saveButton, busy);
     if (busy) setSaveState("saving", "正在安全保存…");

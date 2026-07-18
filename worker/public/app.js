@@ -44,6 +44,7 @@
     income: {},
     accounts: [],
     schedules: [],
+    trend: [],
     recent_runs: [],
     recent_events: [],
     settings: {},
@@ -372,7 +373,8 @@
     const totalWins = safeInteger(totals?.total_wins, accountItems.reduce((sum, account) => sum + safeInteger(account.total_wins), 0));
     $("#total-draws").textContent = formatQuota(totalDraws);
     $("#total-wins").textContent = formatQuota(totalWins);
-    $("#total-win-rate").textContent = `中奖率 ${formatRate(totalWins, totalDraws)}`;
+    $("#total-win-rate").textContent = formatRate(totalWins, totalDraws);
+    $("#total-accounts").textContent = formatQuota(safeInteger(totals?.total_accounts, accountItems.length));
   }
 
   function renderAutomationPause(paused) {
@@ -434,6 +436,59 @@
       time.append(timeNode);
       time.append(element("span", "", schedule.enabled && validTimestamp(schedule.next_at) ? "下次执行" : "计划状态"));
       row.append(copy, time);
+      fragment.append(row);
+    });
+    list.append(fragment);
+  }
+
+  function renderTrend(trend) {
+    const chart = $("#trend-chart");
+    const empty = $("#trend-empty");
+    const items = (Array.isArray(trend) ? trend : []).slice(-14);
+    chart.replaceChildren();
+    empty.hidden = items.length > 0;
+    chart.hidden = items.length === 0;
+    if (!items.length) return;
+
+    const maximum = Math.max(1, ...items.map((item) => safeNumber(item.total_quota ?? item.quota)));
+    const fragment = document.createDocumentFragment();
+    items.forEach((item) => {
+      const quota = safeNumber(item.total_quota ?? item.quota);
+      const column = element("div", "trend-column");
+      const barWrap = element("div", "trend-bar-wrap");
+      const level = quota > 0 ? Math.max(1, Math.min(20, Math.round((quota / maximum) * 20))) : 0;
+      const bar = element("span", `trend-bar trend-level-${level}`);
+      bar.title = `${item.date || "未知日期"}：${formatQuota(quota)} 额度（${formatMoney(amountOf(item, "total_quota"))}）`;
+      barWrap.append(bar);
+      column.append(barWrap, element("span", "trend-label", String(item.date || "--").slice(5)));
+      fragment.append(column);
+    });
+    chart.append(fragment);
+  }
+
+  function renderOverviewEvents(events) {
+    const list = $("#overview-event-list");
+    const empty = $("#overview-event-empty");
+    const items = (Array.isArray(events) ? events : []).slice(0, 5);
+    list.replaceChildren();
+    empty.hidden = items.length > 0;
+    if (!items.length) return;
+
+    const fragment = document.createDocumentFragment();
+    items.forEach((event) => {
+      const quota = safeNumber(event.prize_quota ?? event.quota);
+      const row = element("div", "event-preview-row");
+      const copy = element("div", "event-preview-copy");
+      copy.append(element("strong", "", event.account_name || "未知账号"));
+      copy.append(element("small", "", `${formatDateTime(event.occurred_at || event.created_at)} · ${sourceLabel(event.source || event.task_type)}`));
+      const result = element("div", "event-preview-result");
+      const resultLabel = event.prize_name || event.result || event.message || drawStatusLabel(event.status);
+      const resultName = element("strong", quota > 0 ? "is-positive" : "", resultLabel || "--");
+      const amountLabel = quota > 0
+        ? `+${formatQuota(quota)} 额度 · ${formatMoney(amountOf(event, "prize_quota"))}`
+        : drawStatusLabel(event.status);
+      result.append(resultName, element("small", "", amountLabel));
+      row.append(copy, result);
       fragment.append(row);
     });
     list.append(fragment);
@@ -777,6 +832,7 @@
       income: dashboard.income || {},
       accounts: Array.isArray(dashboard.accounts) ? dashboard.accounts : [],
       schedules: Array.isArray(dashboard.schedules) ? dashboard.schedules : [],
+      trend: Array.isArray(dashboard.trend) ? dashboard.trend : [],
       recent_runs: Array.isArray(dashboard.recent_runs) ? dashboard.recent_runs : [],
       recent_events: Array.isArray(dashboard.recent_events) ? dashboard.recent_events : [],
     };
@@ -787,11 +843,13 @@
     renderAutomationPause(state.dashboard.automation_paused === true);
     renderTodayTasks(state.dashboard.accounts);
     renderSchedules(state.dashboard.schedules);
+    renderTrend(state.dashboard.trend);
     renderOverviewRuns(state.dashboard.recent_runs);
+    renderOverviewEvents(state.dashboard.recent_events);
     renderAccounts();
     renderRunsTable(state.dashboard.recent_runs);
     populateEventAccountFilter();
-    populateManualAccounts();
+    if (!$("#manual-dialog").open) populateManualAccounts();
     if (state.dashboard.configuration_error) {
       showPageError(`账号配置提示：${state.dashboard.configuration_error}`);
     }
@@ -1087,7 +1145,10 @@
     const allCount = configuredAccounts.length;
     const count = scope === "all" ? allCount : selected.length;
     const drawCount = Math.max(1, Math.min(3, safeInteger($("#manual-draw-count").value, 1)));
-    $("#draw-count-field").hidden = action !== "draw";
+    const drawCountField = $("#draw-count-field");
+    const drawCountInput = $("#manual-draw-count");
+    drawCountField.hidden = action !== "draw";
+    drawCountInput.disabled = action !== "draw";
     const settings = state.adminSettings || state.dashboard?.settings || {};
     const drawSettings = settingSection(settings, "draw", "regular_draw");
     const quizSettings = settingSection(settings, "quiz");
