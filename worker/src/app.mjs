@@ -34,6 +34,7 @@ import {
 import {
   AccountConfigError,
   publicAccountConfiguration,
+  runtimeAccountConfiguration,
   updateAccountConfiguration,
 } from "./accounts.mjs";
 
@@ -272,7 +273,7 @@ async function configFor(env, { legacy = true } = {}) {
 }
 
 async function accountsFor(env, options) {
-  const accounts = normalizeAccounts(await configFor(env, options));
+  const accounts = normalizeAccounts(runtimeAccountConfiguration(await configFor(env, options)));
   if (!Array.isArray(accounts) || accounts.length === 0) {
     throw new HttpError(409, "accounts_missing", "没有可运行的账号。 ");
   }

@@ -100,3 +100,19 @@ test("account configuration uses the same light visual system", async () => {
   assert.doesNotMatch(css, /(?:radial|linear)-gradient\s*\(/u);
   assert.doesNotMatch(css, /#071019|#43d6b3/iu);
 });
+
+test("account configuration exposes secret-safe shared clearance controls", async () => {
+  const [html, script] = await Promise.all([
+    asset("config_generator.html"),
+    asset("config.js"),
+  ]);
+
+  assert.match(html, /id="site-clearance-list"/u);
+  assert.match(html, /id="site-clearance-template"/u);
+  assert.match(html, /同一站点的多个账号共用/u);
+  assert.match(html, /末尾的 = 或 == 会原样保留/u);
+  assert.match(script, /value\.site_clearances/u);
+  assert.match(script, /site_clearances: siteClearances/u);
+  assert.match(script, /clear: true/u);
+  assert.doesNotThrow(() => new Function(script));
+});

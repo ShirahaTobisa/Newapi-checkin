@@ -154,6 +154,20 @@
           </div>
 
           <form id="accounts-form" novalidate>
+            <section class="site-clearance-panel" aria-labelledby="site-clearance-title">
+              <div class="site-clearance-heading">
+                <span class="site-clearance-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24"><path d="M12 3 5 6v5c0 4.7 2.8 8.3 7 10 4.2-1.7 7-5.3 7-10V6l-7-3Z"></path><path d="M8.5 12h7M12 8.5v7"></path></svg>
+                </span>
+                <div>
+                  <h3 id="site-clearance-title">站点级 cf_clearance</h3>
+                  <p>可选，同一站点的多个账号共用。秘密不会被读取或回显。</p>
+                </div>
+              </div>
+              <div id="site-clearance-list" class="site-clearance-list"></div>
+              <p id="site-clearance-empty" class="site-clearance-empty" hidden>当前账号列表中没有可配置的站点。</p>
+            </section>
+
             <div id="accounts-list" class="accounts-list"></div>
 
             <div id="empty-state" class="empty-state" hidden>
@@ -183,8 +197,8 @@
             <svg viewBox="0 0 24 24"><path d="M12 3 5 6v5c0 4.7 2.8 8.3 7 10 4.2-1.7 7-5.3 7-10V6l-7-3Z"></path><path d="M9 12h6M12 9v6"></path></svg>
           </span>
           <div>
-            <strong>Cookie 更新规则</strong>
-            <p>已有账号的 Cookie 输入框留空会保留原值；填写新值才会替换。新增账号必须填写 Cookie。</p>
+            <strong>Cookie 与站点通行凭据</strong>
+            <p>账号 Cookie 和 cf_clearance 留空均保留原值；只有填写新值或明确勾选清除时才会修改。</p>
           </div>
         </aside>
       </section>
@@ -248,19 +262,53 @@
               <input
                 class="cookie-input"
                 type="password"
-                maxlength="8192"
+                maxlength="4096"
                 autocomplete="off"
                 autocapitalize="off"
                 spellcheck="false"
-                placeholder="粘贴完整 Cookie"
+                placeholder="粘贴原始 session 值或完整 Cookie 请求头"
               >
             </span>
-            <span class="input-hint cookie-hint">Cookie 不会被页面读取或明文回显。</span>
+            <span class="input-hint cookie-hint">服务端会规范为 session=&lt;值&gt;;，末尾的 = 或 == 会原样保留。</span>
           </label>
         </div>
 
         <p class="account-error" role="alert" hidden></p>
       </article>
+    </template>
+
+    <template id="site-clearance-template">
+      <div class="site-clearance-row">
+        <div class="site-clearance-site">
+          <span>
+            <strong class="site-clearance-host">站点</strong>
+            <small class="site-clearance-url"></small>
+          </span>
+          <span class="site-clearance-state" data-state="missing">未配置</span>
+        </div>
+        <div class="site-clearance-controls">
+          <label class="field">
+            <span class="field-label">cf_clearance</span>
+            <span class="input-with-icon secure-field">
+              <span aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="5" y="10" width="14" height="10" rx="2"></rect><path d="M8 10V7a4 4 0 0 1 8 0v3"></path></svg></span>
+              <input
+                class="site-clearance-input"
+                type="password"
+                maxlength="8192"
+                autocomplete="off"
+                autocapitalize="off"
+                spellcheck="false"
+                placeholder="粘贴 cf_clearance 值"
+              >
+            </span>
+            <span class="input-hint">可粘贴原始值或完整的 cf_clearance=... 字段；留空保留。</span>
+          </label>
+          <label class="clearance-clear-option">
+            <input class="site-clearance-clear" type="checkbox">
+            <span>保存时清除已配置值</span>
+          </label>
+        </div>
+      </div>
     </template>
   </body>
 </html>

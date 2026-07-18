@@ -388,6 +388,10 @@ test("admin account API is secret-safe and preserves an existing cookie when lef
   const listedData = await listed.json();
   assert.equal(listedData.accounts.length, 1);
   assert.equal(listedData.accounts[0].cookie_configured, true);
+  assert.deepEqual(listedData.site_clearances, [{
+    base_url: "https://vsllm.com",
+    configured: true,
+  }]);
   assert.equal(JSON.stringify(listedData).includes("existing-secret"), false);
   assert.equal(JSON.stringify(listedData).includes("clearance-secret"), false);
 
@@ -424,6 +428,106 @@ test("admin account API is secret-safe and preserves an existing cookie when lef
   assert.equal(stored.accounts[0].name, "主账号");
   assert.equal(stored.accounts[0].session.includes("existing-secret"), true);
   assert.equal(stored.accounts[1].session.includes("new-secret"), true);
+});
+
+test("admin account API stores one site clearance and injects it into every matching account", async () => {
+  const accounts = [
+    { name: "一号", url: "https://vsllm.com", user_id: "101", session: "first-session" },
+    { name: "二号", url: "https://vsllm.com/api", user_id: "202", session: "second-session" },
+  ];
+  const env = envWith({
+    "newapi-config.json": { accounts },
+    "automation-settings-v1.json": DEFAULT_SETTINGS,
+  });
+  const listedResponse = await handleRequest(
+    request("/api/admin/accounts", { token: "admin-secret" }),
+    env,
+  );
+  const listed = await listedResponse.json();
+  assert.deepEqual(listed.site_clearances, [{
+    base_url: "https://vsllm.com",
+    configured: false,
+  }]);
+
+  const savedResponse = await handleRequest(
+    request("/api/admin/accounts", {
+      method: "PUT",
+      token: "admin-secret",
+      body: {
+        accounts: listed.accounts.map((account) => ({
+          account_key: account.account_key,
+          name: account.name,
+          base_url: account.base_url,
+          user_id: account.user_id,
+          cookie: "",
+        })),
+        site_clearances: [{
+          base_url: "https://vsllm.com",
+          value: "shared-clearance-value",
+        }],
+      },
+    }),
+    env,
+  );
+  assert.equal(savedResponse.status, 200);
+  const saved = await savedResponse.json();
+  assert.equal(saved.site_clearances[0].configured, true);
+  assert.equal(JSON.stringify(saved).includes("shared-clearance-value"), false);
+
+  const sentCookies = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, options = {}) => {
+    sentCookies.push(new Headers(options.headers).get("cookie"));
+    if (String(url).endsWith("/api/gwent/status")) {
+      return responseJson({
+        success: true,
+        data: { charges_current: 0, extra_draws_left: 0, tasks: {} },
+      });
+    }
+    if (String(url).endsWith("/api/user/self")) {
+      return responseJson({ success: true, data: { quota: 0, used_quota: 0 } });
+    }
+    throw new Error(`Unexpected URL: ${url}`);
+  };
+  try {
+    const balances = await handleRequest(
+      request("/api/admin/balances", {
+        method: "POST",
+        token: "admin-secret",
+        body: { account_keys: ["all"] },
+      }),
+      env,
+    );
+    assert.equal(balances.status, 200);
+    assert.equal(sentCookies.length, 4);
+    assert.equal(
+      sentCookies.every((cookie) => cookie.endsWith("cf_clearance=shared-clearance-value;")),
+      true,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  const clearedResponse = await handleRequest(
+    request("/api/admin/accounts", {
+      method: "PUT",
+      token: "admin-secret",
+      body: {
+        accounts: saved.accounts.map((account) => ({
+          account_key: account.account_key,
+          name: account.name,
+          base_url: account.base_url,
+          user_id: account.user_id,
+          cookie: "",
+        })),
+        site_clearances: [{ base_url: "https://vsllm.com", clear: true }],
+      },
+    }),
+    env,
+  );
+  assert.equal(clearedResponse.status, 200);
+  assert.equal((await clearedResponse.json()).site_clearances[0].configured, false);
+  assert.deepEqual(env.STATE_DB.value("newapi-config.json").site_clearances, []);
 });
 
 test("admin balance refresh includes safe draw charges only for VSLLM accounts", async () => {
@@ -518,9 +622,9 @@ test("admin balance refresh includes safe draw charges only for VSLLM accounts",
     assert.deepEqual(
       calls.map((call) => [call.url, call.userId, call.cookie]).sort(),
       [
-        ["https://generic.example/api/user/self", "sensitive-user-202", "session=generic-cookie-secret"],
-        ["https://vsllm.com/api/gwent/status", "sensitive-user-101", "session=vsllm-cookie-secret"],
-        ["https://vsllm.com/api/user/self", "sensitive-user-101", "session=vsllm-cookie-secret"],
+        ["https://generic.example/api/user/self", "sensitive-user-202", "session=generic-cookie-secret;"],
+        ["https://vsllm.com/api/gwent/status", "sensitive-user-101", "session=vsllm-cookie-secret;"],
+        ["https://vsllm.com/api/user/self", "sensitive-user-101", "session=vsllm-cookie-secret;"],
       ].sort(),
     );
 

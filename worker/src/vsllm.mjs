@@ -123,26 +123,56 @@ function normalizedBaseUrl(value) {
   return url.href.replace(/\/+$/u, "");
 }
 
+function cookieItems(value) {
+  const items = new Map();
+  for (const part of value.split(";")) {
+    const separator = part.indexOf("=");
+    if (separator < 0) continue;
+    const name = part.slice(0, separator).trim().toLowerCase();
+    if (!name || items.has(name)) continue;
+    items.set(name, part.slice(separator + 1).trim());
+  }
+  return items;
+}
+
 function normalizedCookie(input) {
   const cookieValue = input.cookie ?? input.session;
   if (typeof cookieValue !== "string" || cookieValue.trim().length === 0) {
     throw new TypeError("账号缺少 Cookie/Session");
   }
-  let cookie = cookieValue.trim();
-  if (!cookie.includes("=")) cookie = `session=${cookie}`;
-
-  const clearance = input.cf_clearance ?? input.cfClearance;
-  if (
-    typeof clearance === "string" &&
-    clearance.trim() &&
-    !/(?:^|;\s*)cf_clearance=/iu.test(cookie)
-  ) {
-    cookie = `${cookie}; cf_clearance=${clearance.trim()}`;
-  }
-  if (cookie.length > MAX_COOKIE_LENGTH || /[\r\n\u0000]/u.test(cookie)) {
+  let value = cookieValue.trim();
+  if (value.length > MAX_COOKIE_LENGTH || /[\r\n\u0000]/u.test(value)) {
     throw new TypeError("账号 Cookie 无效");
   }
-  return cookie;
+  const hasHeaderPrefix = /^cookie\s*:/iu.test(value);
+  if (hasHeaderPrefix) value = value.replace(/^cookie\s*:\s*/iu, "");
+
+  const hasCookieSyntax = hasHeaderPrefix || value.includes(";") || /^session\s*=/iu.test(value);
+  const items = hasCookieSyntax ? cookieItems(value) : null;
+  const session = hasCookieSyntax ? items.get("session") : value;
+  if (typeof session !== "string" || session.length === 0) {
+    throw new TypeError("账号 Cookie 缺少 session");
+  }
+
+  const inlineClearance = items?.get("cf_clearance") || "";
+  const configuredClearance = input.cf_clearance ?? input.cfClearance;
+  let cfClearance = typeof configuredClearance === "string" && configuredClearance.trim()
+    ? configuredClearance.trim()
+    : inlineClearance;
+  if (/^cf_clearance\s*=/iu.test(cfClearance)) {
+    cfClearance = cfClearance.replace(/^cf_clearance\s*=\s*/iu, "");
+  }
+  cfClearance = cfClearance.replace(/;\s*$/u, "").trim();
+  if (
+    /[;\r\n\u0000]/u.test(cfClearance) ||
+    `session=${session}; cf_clearance=${cfClearance};`.length > MAX_COOKIE_LENGTH
+  ) {
+    throw new TypeError("账号 cf_clearance 无效");
+  }
+  return {
+    cookie: `session=${session};`,
+    cfClearance,
+  };
 }
 
 function normalizeAccount(input, index) {
@@ -150,7 +180,7 @@ function normalizeAccount(input, index) {
     throw new TypeError(`第 ${index + 1} 个账号格式无效`);
   }
   const baseUrl = normalizedBaseUrl(input.baseUrl ?? input.url ?? DEFAULT_VSLLM_URL);
-  const cookie = normalizedCookie(input);
+  const { cookie, cfClearance } = normalizedCookie(input);
   const rawUserId = input.userId ?? input.user_id;
   const userId = rawUserId === null || rawUserId === undefined
     ? ""
@@ -160,7 +190,14 @@ function normalizeAccount(input, index) {
   }
   const name = compactText(input.name, `账号${index + 1}`, MAX_ACCOUNT_NAME_LENGTH) || `账号${index + 1}`;
   const hostname = new URL(baseUrl).hostname.toLowerCase().replace(/\.$/u, "");
-  return { name, baseUrl, userId, cookie, isVsllm: hostname === "vsllm.com" };
+  return {
+    name,
+    baseUrl,
+    userId,
+    cookie,
+    ...(cfClearance ? { cfClearance } : {}),
+    isVsllm: hostname === "vsllm.com",
+  };
 }
 
 export function normalizeAccounts(config) {
@@ -232,11 +269,14 @@ function fetchImplementation(options) {
 }
 
 function requestHeaders(account) {
+  const cookie = account.cfClearance
+    ? `${account.cookie} cf_clearance=${account.cfClearance};`
+    : account.cookie;
   const headers = new Headers({
     Accept: "application/json, text/plain, */*",
     "Cache-Control": "no-store",
     Pragma: "no-cache",
-    Cookie: account.cookie,
+    Cookie: cookie,
   });
   if (account.userId) headers.set("new-api-user", account.userId);
   return headers;

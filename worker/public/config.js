@@ -29,6 +29,9 @@
     accountsForm: document.querySelector("#accounts-form"),
     accountsList: document.querySelector("#accounts-list"),
     accountTemplate: document.querySelector("#account-template"),
+    siteClearanceList: document.querySelector("#site-clearance-list"),
+    siteClearanceEmpty: document.querySelector("#site-clearance-empty"),
+    siteClearanceTemplate: document.querySelector("#site-clearance-template"),
     emptyState: document.querySelector("#empty-state"),
     addButton: document.querySelector("#add-account-button"),
     emptyAddButton: document.querySelector("#empty-add-button"),
@@ -219,7 +222,23 @@
     if (accounts.length > maxAccounts) {
       throw new UiError("服务器返回的账号数量超过允许上限。");
     }
-    return { accounts, maxAccounts };
+    const rawSiteClearances = value.site_clearances === undefined ? [] : value.site_clearances;
+    if (!Array.isArray(rawSiteClearances) || rawSiteClearances.length > 100) {
+      throw new UiError("服务器返回的站点通行配置无效。请稍后重试。");
+    }
+    const seenSiteUrls = new Set();
+    const siteClearances = rawSiteClearances.map((item) => {
+      if (!item || typeof item !== "object" || Array.isArray(item)) {
+        throw new UiError("服务器返回的站点通行配置无效。请稍后重试。");
+      }
+      const baseUrl = normalizedBaseUrl(cleanText(item.base_url, 240));
+      if (!baseUrl || seenSiteUrls.has(baseUrl)) {
+        throw new UiError("服务器返回的站点通行配置无效。请稍后重试。");
+      }
+      seenSiteUrls.add(baseUrl);
+      return { base_url: baseUrl, configured: item.configured === true };
+    });
+    return { accounts, maxAccounts, siteClearances };
   }
 
   function apiError(status, payload) {
@@ -248,7 +267,7 @@
     return new UiError("请求未完成，请检查账号信息后重试。 ");
   }
 
-  async function requestAccounts(method, accounts) {
+  async function requestAccounts(method, configuration = null) {
     const headers = new Headers({ Accept: "application/json" });
     headers.set("Authorization", `Bearer ${state.token}`);
     const init = {
@@ -260,7 +279,7 @@
     };
     if (method === "PUT") {
       headers.set("Content-Type", "application/json; charset=utf-8");
-      init.body = JSON.stringify({ accounts });
+      init.body = JSON.stringify(configuration);
     }
 
     let response;
@@ -284,6 +303,46 @@
 
   function accountCards() {
     return [...elements.accountsList.querySelectorAll(".account-card")];
+  }
+
+  function siteClearanceRows() {
+    return [...elements.siteClearanceList.querySelectorAll(".site-clearance-row")];
+  }
+
+  function renderSiteClearances(siteClearances) {
+    elements.siteClearanceList.replaceChildren();
+    for (const site of siteClearances) {
+      const fragment = elements.siteClearanceTemplate.content.cloneNode(true);
+      const row = fragment.querySelector(".site-clearance-row");
+      const host = row.querySelector(".site-clearance-host");
+      const url = row.querySelector(".site-clearance-url");
+      const status = row.querySelector(".site-clearance-state");
+      const input = row.querySelector(".site-clearance-input");
+      const clear = row.querySelector(".site-clearance-clear");
+
+      row.dataset.baseUrl = site.base_url;
+      row.dataset.configured = String(site.configured);
+      host.textContent = new URL(site.base_url).hostname;
+      url.textContent = site.base_url;
+      status.dataset.state = site.configured ? "configured" : "missing";
+      status.textContent = site.configured ? "已配置" : "未配置";
+      input.value = "";
+      input.placeholder = site.configured ? "已配置；留空保留原值" : "可选；粘贴 cf_clearance 值";
+      clear.checked = false;
+      clear.disabled = !site.configured;
+
+      input.addEventListener("input", () => {
+        if (input.value.trim()) clear.checked = false;
+        input.disabled = clear.checked;
+        markDirty();
+      });
+      clear.addEventListener("change", () => {
+        input.disabled = clear.checked;
+        markDirty();
+      });
+      elements.siteClearanceList.append(row);
+    }
+    elements.siteClearanceEmpty.hidden = siteClearances.length !== 0;
   }
 
   function updateSummary() {
@@ -355,11 +414,11 @@
       fields.cookieField.classList.add("is-configured");
       fields.cookieState.textContent = "Cookie 已配置";
       fields.cookie.placeholder = "已配置；留空保留原值";
-      fields.cookieHint.textContent = "仅在需要替换 Cookie 时填写新值。";
+      fields.cookieHint.textContent = "可粘贴原始 session 值或完整 Cookie 请求头；末尾的 = 会原样保留。";
     } else {
       fields.cookieState.textContent = existing ? "Cookie 尚未配置" : "新增账号必须填写";
-      fields.cookie.placeholder = "粘贴完整 Cookie";
-      fields.cookieHint.textContent = "此账号保存前必须填写 Cookie。";
+      fields.cookie.placeholder = "粘贴原始 session 值或完整 Cookie 请求头";
+      fields.cookieHint.textContent = "服务端会规范为 session=<值>;，并保留末尾的 = 或 ==。";
     }
 
     if (account.validation_error) {
@@ -390,6 +449,7 @@
 
   function renderAccounts(response) {
     state.maxAccounts = response.maxAccounts;
+    renderSiteClearances(response.siteClearances);
     elements.accountsList.replaceChildren();
     for (const account of response.accounts) {
       addAccountCard(account, { focus: false, dirty: false });
@@ -475,11 +535,39 @@
     return accounts;
   }
 
+  function collectSiteClearances() {
+    const updates = [];
+    for (const row of siteClearanceRows()) {
+      const input = row.querySelector(".site-clearance-input");
+      const clear = row.querySelector(".site-clearance-clear");
+      const value = input.value.trim();
+      if (value.length > 4096 || /[\r\n\u0000]/u.test(value)) {
+        input.setAttribute("aria-invalid", "true");
+        input.focus();
+        showToast("cf_clearance 包含无效字符或长度超出限制。", "error");
+        return null;
+      }
+      input.setAttribute("aria-invalid", "false");
+      if (clear.checked) {
+        updates.push({ base_url: row.dataset.baseUrl, clear: true });
+      } else if (value) {
+        updates.push({ base_url: row.dataset.baseUrl, value });
+      }
+    }
+    return updates;
+  }
+
   function setWorkspaceBusy(busy) {
     state.busy = busy;
     elements.workspace.setAttribute("aria-busy", String(busy));
     for (const control of elements.accountsForm.querySelectorAll("input, button")) {
       control.disabled = busy;
+    }
+    for (const row of siteClearanceRows()) {
+      const input = row.querySelector(".site-clearance-input");
+      const clear = row.querySelector(".site-clearance-clear");
+      clear.disabled = busy || row.dataset.configured !== "true";
+      input.disabled = busy || clear.checked;
     }
     elements.addButton.disabled = busy;
     elements.emptyAddButton.disabled = busy;
@@ -517,6 +605,7 @@
     state.maxAccounts = 0;
     clearSessionToken();
     elements.accountsList.replaceChildren();
+    elements.siteClearanceList.replaceChildren();
     showLogin({ message });
   }
 
@@ -555,10 +644,15 @@
     if (state.busy) return;
     const accounts = collectAccounts();
     if (!accounts) return;
+    const siteClearances = collectSiteClearances();
+    if (!siteClearances) return;
 
     setWorkspaceBusy(true);
     try {
-      const response = await requestAccounts("PUT", accounts);
+      const response = await requestAccounts("PUT", {
+        accounts,
+        site_clearances: siteClearances,
+      });
       renderAccounts(response);
       const invalidCount = response.accounts.filter((account) => !account.valid).length;
       if (invalidCount > 0) {

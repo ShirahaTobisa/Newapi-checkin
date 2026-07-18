@@ -67,12 +67,13 @@ test("normalizeAccounts accepts existing and reference secret shapes", () => {
     name: "主号",
     baseUrl: "https://vsllm.com",
     userId: "123",
-    cookie: "session=session-secret; cf_clearance=clearance-secret",
+    cookie: "session=session-secret;",
+    cfClearance: "clearance-secret",
     isVsllm: true,
   });
   assert.equal(accounts[1].baseUrl, "https://vsllm.com");
   assert.equal(accounts[1].userId, "456");
-  assert.equal(accounts[1].cookie, "session=reference-cookie");
+  assert.equal(accounts[1].cookie, "session=reference-cookie;");
   assert.throws(
     () => normalizeAccounts([{ url: "http://vsllm.com", session: "x" }]),
     /HTTPS/u,
@@ -80,6 +81,33 @@ test("normalizeAccounts accepts existing and reference secret shapes", () => {
   assert.throws(
     () => normalizeAccounts([{ url: "https://vsllm.com", session: "x\r\nInjected: yes" }]),
     /Cookie/u,
+  );
+});
+
+test("normalizeAccounts preserves padded session values and isolates cf_clearance", () => {
+  const accounts = normalizeAccounts([
+    { session: "opaque=middle=tail==", user_id: "1" },
+    { cookie: "session=named=token==;", user_id: "2" },
+    {
+      cookie: "Cookie: preference=compact; session=header=token==; cf_clearance=shared-value; ignored=yes",
+      user_id: "3",
+    },
+    {
+      cookie: "preference=compact; session=plain=token==; cf_clearance=from-cookie",
+      cf_clearance: "configured-value",
+      user_id: "4",
+    },
+  ]);
+
+  assert.equal(accounts[0].cookie, "session=opaque=middle=tail==;");
+  assert.equal(accounts[1].cookie, "session=named=token==;");
+  assert.equal(accounts[2].cookie, "session=header=token==;");
+  assert.equal(accounts[2].cfClearance, "shared-value");
+  assert.equal(accounts[3].cookie, "session=plain=token==;");
+  assert.equal(accounts[3].cfClearance, "configured-value");
+  assert.throws(
+    () => normalizeAccounts([{ cookie: "Cookie: preference=compact; cf_clearance=value" }]),
+    /session/u,
   );
 });
 
@@ -111,7 +139,7 @@ test("generic check-in uses safe headers and returns only allowlisted data", asy
   assert.equal(result.quota_awarded, 500000);
   assert.equal(result.checkin_date, "2026-07-18");
   assert.doesNotMatch(JSON.stringify(result), /private-session|do-not-return/u);
-  assert.equal(mock.calls[0].init.headers.get("Cookie"), "session=private-session");
+  assert.equal(mock.calls[0].init.headers.get("Cookie"), "session=private-session;");
   assert.equal(mock.calls[0].init.headers.get("new-api-user"), "77");
   assert.equal(mock.calls[0].init.redirect, "manual");
   assert.equal(mock.calls[0].url, "https://api.example.com/api/user/checkin");
@@ -184,6 +212,10 @@ test("getBalance keeps raw quota and converts 500000 quota to one yuan", async (
   assert.equal(result.balance_yuan, "1.000000");
   assert.equal(result.used_yuan, "2.500000");
   assert.equal(result.request_count, 9);
+  assert.equal(
+    mock.calls[0].init.headers.get("Cookie"),
+    "session=session-secret; cf_clearance=clearance-secret;",
+  );
 });
 
 test("global fetch keeps the Cloudflare Workers receiver", async () => {
