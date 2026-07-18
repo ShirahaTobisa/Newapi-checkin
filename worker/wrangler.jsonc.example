@@ -1,0 +1,42 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "newapi-checkin",
+  "main": "src/entry.mjs",
+  "compatibility_date": "2026-07-18",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+
+  "secrets": {
+    "required": ["ADMIN_TOKEN"]
+  },
+
+  "vars": {
+    "ALLOWED_ORIGINS": "https://your-dashboard.example",
+    "AUTOMATION_PAUSED": "true",
+    "LEGACY_WRITES_ENABLED": "false"
+  },
+
+  "d1_databases": [
+    {
+      "binding": "STATE_DB",
+      "database_name": "newapi-checkin-state",
+      "migrations_dir": "migrations"
+    }
+  ],
+
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "run_worker_first": true
+  },
+
+  "triggers": {
+    "crons": ["* * * * *"]
+  },
+
+  "observability": {
+    "enabled": true,
+    "logs": { "head_sampling_rate": 1 },
+    "traces": { "enabled": true, "head_sampling_rate": 0.05 }
+  }
+}

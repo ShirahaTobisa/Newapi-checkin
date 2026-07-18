@@ -1,3 +1,3 @@
-import worker from "./index.mjs";
+import worker from "./app.mjs";
 
 export default worker;

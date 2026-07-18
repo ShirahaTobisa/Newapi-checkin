@@ -1,0 +1,22 @@
+{
+  "name": "newapi-checkin-cloudflare",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "check": "node --check src/accounts.mjs && node --check src/app.mjs && node --check src/index.mjs && node --check src/settings.mjs && node --check src/state.mjs && node --check src/vsllm.mjs && node --check public/app.js && node --check public/config.js",
+    "types": "wrangler types --config wrangler.jsonc",
+    "dev": "wrangler dev --test-scheduled --config wrangler.jsonc",
+    "db:migrate:local": "wrangler d1 migrations apply STATE_DB --local --config wrangler.jsonc",
+    "db:migrate": "wrangler d1 migrations apply STATE_DB --remote --config wrangler.jsonc",
+    "deploy:dry": "wrangler deploy --dry-run --config wrangler.jsonc",
+    "deploy": "wrangler deploy --config wrangler.jsonc"
+  },
+  "devDependencies": {
+    "wrangler": "^4.112.0"
+  }
+}

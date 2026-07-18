@@ -1473,7 +1473,10 @@ function mergeHistory(history, input) {
   history.runs = [
     {
       ...input.run,
-      account_count: new Set(input.events.map((event) => event.account_key)).size,
+      account_count:
+        Number.isSafeInteger(input.run.account_count) && input.run.account_count >= 0
+          ? input.run.account_count
+          : new Set(input.events.map((event) => event.account_key)).size,
       successful_draws: successfulDraws,
       total_quota: totalQuota,
     },
@@ -1655,4 +1658,13 @@ export default {
   fetch(request, env) {
     return handleRequest(request, env, (url, init) => fetch(url, init));
   },
+};
+
+export {
+  beijingDate,
+  emptyHistory,
+  emptyTaskStatuses,
+  mergeHistory,
+  mergeTaskStatuses,
+  publicTaskStatuses,
 };
