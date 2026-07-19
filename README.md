@@ -55,7 +55,7 @@ VSLLM 状态接口目前返回 `cooldown_seconds=7200`（2 小时），因此调
 
 部署后可直接查看控制台和完整翻牌记录：
 
-- 控制台：[https://newapi-sync.mornye.uk](https://newapi-sync.mornye.uk)
+- 控制台：byd ai把我的站点放出来了。气笑了。
 - 健康状态：`GET /health`
 - 仪表盘：`GET /api/dashboard`
 - 翻牌历史：`GET /api/history/events`
