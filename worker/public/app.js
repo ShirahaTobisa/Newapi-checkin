@@ -574,10 +574,25 @@
     }
 
     const current = optionalInteger(gwent.charges_current);
+    const maximum = optionalInteger(gwent.charges_max);
     const extra = optionalInteger(gwent.extra_draws_left);
+    const cooldown = optionalInteger(gwent.cooldown_seconds);
+    const adInterval = optionalInteger(gwent.ad_min_interval_seconds);
+    const durationLabel = (seconds) => {
+      if (seconds === null || seconds <= 0 || seconds % 60 !== 0) return null;
+      const minutes = seconds / 60;
+      if (minutes % 60 === 0) return `${minutes / 60} 小时`;
+      return `${minutes} 分钟`;
+    };
     const parts = [];
-    if (current !== null) parts.push(`充能 ${current}`);
+    if (current !== null) {
+      parts.push(maximum !== null ? `充能 ${current}/${maximum}` : `充能 ${current}`);
+    }
     if (extra !== null) parts.push(`额外 ${extra}`);
+    const cooldownLabel = durationLabel(cooldown);
+    if (cooldownLabel) parts.push(`自然恢复 ${cooldownLabel}`);
+    const adIntervalLabel = durationLabel(adInterval);
+    if (adIntervalLabel && adInterval !== cooldown) parts.push(`视频间隔 ${adIntervalLabel}`);
     metric.dataset.state = "available";
     metric.append(element("strong", "", `${available} 次`));
     metric.append(element("small", "", parts.length ? parts.join(" + ") : "当前可用翻牌次数"));

@@ -33,6 +33,7 @@ const quizTaskStates = new Set([
   "claimed",
   "unknown",
 ]);
+const taskRewardTypes = new Set(["charge", "extra_draw", "quota"]);
 
 function compactText(value, fallback = "", limit = MAX_MESSAGE_LENGTH) {
   const text = String(value ?? fallback)
@@ -557,12 +558,28 @@ function normalizeEpochSeconds(value) {
   return Number.isFinite(timestamp) ? Math.max(0, Math.trunc(timestamp / 1000)) : null;
 }
 
+function normalizeTaskReward(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const fields = {};
+  if (Object.prototype.hasOwnProperty.call(value, "reward_type")) {
+    const rawType = compactText(value.reward_type, "", 24).toLowerCase();
+    fields.reward_type = taskRewardTypes.has(rawType) ? rawType : "unknown";
+  }
+  if (Object.prototype.hasOwnProperty.call(value, "reward_amount")) {
+    fields.reward_amount = safeInteger(value.reward_amount, { minimum: 1, maximum: 100 });
+  }
+  return fields;
+}
+
 function normalizeQuizTask(value, account) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const rawStatus = safeMessage(value.status, account, "unknown").toLowerCase();
+  // The upstream UI treats `won` as finished, but `lost` as retryable.
+  const status = rawStatus === "won" ? "completed" : rawStatus === "lost" ? "pending" : rawStatus;
   return {
-    status: quizTaskStates.has(rawStatus) ? rawStatus : "unknown",
+    status: quizTaskStates.has(status) ? status : "unknown",
     suspended: value.suspended === true,
+    ...normalizeTaskReward(value),
   };
 }
 
@@ -586,6 +603,8 @@ function normalizeAdTask(value, nowSeconds) {
     daily_cap: dailyCap,
     next_available_at: nextAvailableAt,
     duration_seconds: normalizeAdDuration(value.duration_sec),
+    min_interval_seconds: safeInteger(value.min_interval_sec, { minimum: 0 }),
+    ...normalizeTaskReward(value),
   };
 }
 
@@ -608,6 +627,80 @@ function nowEpochSeconds(options) {
   return Math.trunc(Date.now() / 1000);
 }
 
+function rewardCounter(value) {
+  return Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
+function rewardSnapshot(status) {
+  if (!status || status.ok !== true) return null;
+  return {
+    charges_current: rewardCounter(status.charges_current),
+    charges_max: rewardCounter(status.charges_max),
+    extra_draws_left: rewardCounter(status.extra_draws_left),
+    available: rewardCounter(status.available),
+  };
+}
+
+function rewardDelta(before, after) {
+  if (!before || !after) return null;
+  return {
+    charges_current:
+      before.charges_current !== null && after.charges_current !== null
+        ? after.charges_current - before.charges_current
+        : null,
+    extra_draws_left:
+      before.extra_draws_left !== null && after.extra_draws_left !== null
+        ? after.extra_draws_left - before.extra_draws_left
+        : null,
+  };
+}
+
+function taskRewardState(task, beforeStatus, afterStatus, { inactive = false } = {}) {
+  const rewardType = task?.reward_type ?? null;
+  const rewardAmount = task?.reward_amount ?? null;
+  const before = rewardSnapshot(beforeStatus);
+  const after = rewardSnapshot(afterStatus);
+  const delta = rewardDelta(before, after);
+  let status = inactive ? "not_applicable" : "unknown";
+  let drawReady = false;
+
+  if (!inactive && rewardAmount !== null && rewardAmount > 0) {
+    if (rewardType === "quota") {
+      status = "not_applicable";
+    } else if (before && after && delta) {
+      if (rewardType === "extra_draw") {
+        if (delta.extra_draws_left !== null && delta.extra_draws_left >= rewardAmount) {
+          status = "confirmed";
+          drawReady = true;
+        }
+      } else if (rewardType === "charge") {
+        const knownMax = before.charges_max ?? after.charges_max;
+        if (delta.charges_current !== null && delta.charges_current >= rewardAmount) {
+          status = knownMax === null ? "unknown" : "confirmed";
+          drawReady = status === "confirmed";
+        } else if (
+          delta.charges_current === 0 &&
+          knownMax !== null &&
+          ((before.charges_current !== null && before.charges_current >= knownMax) ||
+            (after.charges_current !== null && after.charges_current >= knownMax))
+        ) {
+          status = "capped";
+        }
+      }
+    }
+  }
+
+  return {
+    reward_type: rewardType,
+    reward_amount: rewardAmount,
+    reward_status: status,
+    reward_before: before,
+    reward_after: after,
+    reward_delta: delta,
+    reward_draw_ready: drawReady,
+  };
+}
+
 export async function getGwentStatus(accountInput, options = {}) {
   const prepared = operationAccount(accountInput);
   if (prepared.error) return prepared.error;
@@ -628,6 +721,7 @@ export async function getGwentStatus(accountInput, options = {}) {
     Object.prototype.hasOwnProperty.call(data, "extra_draws_left");
   const chargesCurrent = quotaInteger(data.charges_current);
   const extraDrawsLeft = quotaInteger(data.extra_draws_left);
+  const chargesMax = safeInteger(data.charges_max, { minimum: 0 });
   return {
     ok: true,
     success: true,
@@ -637,6 +731,7 @@ export async function getGwentStatus(accountInput, options = {}) {
     available: hasChargeFields ? chargesCurrent + extraDrawsLeft : null,
     charges_current: hasChargeFields ? chargesCurrent : null,
     extra_draws_left: hasChargeFields ? extraDrawsLeft : null,
+    charges_max: chargesMax,
     next_available_at: normalizeEpochSeconds(data.next_available_at),
     next_charge_at: normalizeEpochSeconds(data.next_charge_at),
     cooldown_seconds: safeInteger(data.cooldown_seconds, { minimum: 0 }),
@@ -945,6 +1040,15 @@ export async function runQuiz(accountInput, options = {}) {
     }
     attempts.push({ answer_index: answerIndex, correct });
     if (correct) {
+      // The answer endpoint only reports `correct`; confirm the charge was
+      // actually credited before the caller schedules a reward draw.
+      const refreshedStatus = await getGwentStatus(account, options);
+      const rewardState = taskRewardState(task, initialStatus, refreshedStatus);
+      const rewardMessage = rewardState.reward_status === "confirmed"
+        ? "答题完成，奖励可翻牌"
+        : rewardState.reward_status === "capped"
+          ? "答题完成，但充能已达上限，跳过奖励翻牌"
+          : "答题完成，但无法确认充能到账，暂不翻牌";
       return {
         ok: true,
         success: true,
@@ -952,9 +1056,10 @@ export async function runQuiz(accountInput, options = {}) {
         completed: true,
         skipped: false,
         reward_ready: true,
+        ...rewardState,
         newly_completed: true,
         attempts,
-        message: "答题完成，奖励可翻牌",
+        message: rewardMessage,
       };
     }
 
@@ -1163,6 +1268,7 @@ export async function runAd(accountInput, options = {}) {
     observedTask?.done_count !== undefined &&
     observedTask.done_count > task.done_count;
   const rewardReady = claimExplicitSuccess || observedIncrease;
+  const rewardState = taskRewardState(task, initialStatus, refreshed);
 
   if (!rewardReady) {
     const claimUncertain = !claim.received || claim.parse_error !== null;
@@ -1177,6 +1283,7 @@ export async function runAd(accountInput, options = {}) {
       }),
       status: claimUncertain ? "uncertain" : (claimFailure?.status ?? "error"),
       reward_ready: false,
+      ...rewardState,
       newly_completed: false,
       duration_seconds: durationSeconds,
       before_done_count: task.done_count,
@@ -1197,6 +1304,7 @@ export async function runAd(accountInput, options = {}) {
         ? "available"
         : "unknown";
   const finalTask = {
+    ...task,
     status: finalStatus,
     suspended: false,
     completed,
@@ -1205,16 +1313,22 @@ export async function runAd(accountInput, options = {}) {
     next_available_at: nextAvailableAt,
     duration_seconds: observedTask?.duration_seconds ?? task.duration_seconds,
   };
+  const rewardMessage = rewardState.reward_status === "confirmed"
+    ? (refreshed.ok ? "视频奖励已领取，可进行奖励翻牌" : "视频奖励已领取，状态刷新失败")
+    : rewardState.reward_status === "capped"
+      ? "视频奖励已领取，但充能已达上限，跳过奖励翻牌"
+      : "视频奖励已领取，但无法确认充能到账，暂不翻牌";
   return adResult({
     ok: true,
     success: true,
     status: "claimed",
     skipped: false,
     reward_ready: true,
+    ...rewardState,
     newly_completed: true,
     duration_seconds: durationSeconds,
     before_done_count: task.done_count,
     after_done_count: finalDone,
-    message: refreshed.ok ? "视频奖励已领取，可进行奖励翻牌" : "视频奖励已领取，状态刷新失败",
+    message: rewardMessage,
   }, finalTask);
 }

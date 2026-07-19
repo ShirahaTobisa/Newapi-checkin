@@ -658,8 +658,9 @@ test("admin balance refresh includes safe draw charges only for VSLLM accounts",
         data: {
           charges_current: 2,
           extra_draws_left: 1,
+          charges_max: 2,
+          tasks: { task2: { min_interval_sec: 7_200 } },
           raw_secret: "gwent-raw-secret",
-          tasks: {},
         },
       });
     }
@@ -693,6 +694,8 @@ test("admin balance refresh includes safe draw charges only for VSLLM accounts",
     assert.equal(vsllmResult.gwent.ok, true);
     assert.equal(vsllmResult.gwent.available, 3);
     assert.equal(vsllmResult.gwent.charges_current, 2);
+    assert.equal(vsllmResult.gwent.charges_max, 2);
+    assert.equal(vsllmResult.gwent.ad_min_interval_seconds, 7_200);
     assert.equal(vsllmResult.gwent.extra_draws_left, 1);
 
     const genericResult = data.results.find((result) => result.account_name === "普通签到站");
@@ -992,6 +995,186 @@ test("first draw backfills legacy history before applying the quota migration", 
     assert.equal(env.STATE_DB.value("migration:bonus-quota-v1").version, 1);
   } finally {
     globalThis.fetch = originalFetch;
+  }
+});
+
+test("regular draw fails closed when the upstream availability is unknown", async () => {
+  const account = {
+    name: "一号",
+    url: "https://vsllm.com",
+    user_id: "101",
+    session: "cookie-value",
+  };
+  const env = envWith({
+    "newapi-config.json": { accounts: [account] },
+    "automation-settings-v1.json": DEFAULT_SETTINGS,
+    "migration:bonus-quota-v1": { version: 1, multiplier: 1.5 },
+  });
+  const calls = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    calls.push(String(url));
+    if (String(url).endsWith("/api/gwent/status")) {
+      return responseJson({ success: true, data: { tasks: {} } });
+    }
+    throw new Error(`draw must not be sent: ${url}`);
+  };
+
+  try {
+    const response = await handleRequest(
+      request("/api/admin/run", {
+        method: "POST",
+        token: "admin-secret",
+        headers: { "idempotency-key": "draw-unknown-availability-01" },
+        body: { action: "draw", account_keys: ["all"], draw_count: 1 },
+      }),
+      env,
+    );
+    assert.equal(response.status, 200);
+    const data = await response.json();
+    assert.equal(data.status, "error");
+    assert.equal(data.results[0].steps[0].status, "unknown");
+    assert.deepEqual(calls, ["https://vsllm.com/api/gwent/status"]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("all skips its extra regular draw when task rewards exhaust availability", async () => {
+  const account = {
+    name: "一号",
+    url: "https://vsllm.com",
+    user_id: "101",
+    session: "cookie-value",
+  };
+  const env = envWith({
+    "newapi-config.json": { accounts: [account] },
+    "automation-settings-v1.json": DEFAULT_SETTINGS,
+    "migration:bonus-quota-v1": { version: 1, multiplier: 1.5 },
+  });
+  const calls = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const value = String(url);
+    calls.push(value);
+    if (value.endsWith("/api/user/checkin")) {
+      return responseJson({ success: true, message: "签到成功", data: {} });
+    }
+    if (value.endsWith("/api/gwent/status")) {
+      return responseJson({
+        success: true,
+        data: {
+          charges_current: 0,
+          extra_draws_left: 0,
+          tasks: {
+            task2: { done_count: 3, daily_cap: 3, next_available_at: 0 },
+            task3: { status: "completed" },
+          },
+        },
+      });
+    }
+    throw new Error(`task must not start a draw: ${url}`);
+  };
+
+  try {
+    const response = await handleRequest(
+      request("/api/admin/run", {
+        method: "POST",
+        token: "admin-secret",
+        headers: { "idempotency-key": "all-no-available-draw-01" },
+        body: { action: "all", account_keys: ["all"] },
+      }),
+      env,
+    );
+    assert.equal(response.status, 200);
+    const data = await response.json();
+    assert.equal(data.status, "success");
+    const drawStep = data.results[0].steps.find((step) => step.action === "draw");
+    assert.equal(drawStep.skipped, true);
+    assert.equal(drawStep.status, "cooldown");
+    assert.equal(calls.some((url) => url.endsWith("/api/gwent/share_unlock")), false);
+    assert.equal(calls.some((url) => url.endsWith("/api/gwent/draw")), false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("successful video claims at a full charge pool do not trigger a reward draw", async () => {
+  const account = {
+    name: "一号",
+    url: "https://vsllm.com",
+    user_id: "101",
+    session: "cookie-value",
+  };
+  const env = envWith({
+    "newapi-config.json": { accounts: [account] },
+    "automation-settings-v1.json": DEFAULT_SETTINGS,
+    "migration:bonus-quota-v1": { version: 1, multiplier: 1.5 },
+  });
+  const calls = [];
+  const originalFetch = globalThis.fetch;
+  const originalSetTimeout = globalThis.setTimeout;
+  const originalClearTimeout = globalThis.clearTimeout;
+  globalThis.setTimeout = (callback, delay, ...args) => {
+    const handle = { delay };
+    if (Number(delay) < 30_000) queueMicrotask(() => callback(...args));
+    return handle;
+  };
+  globalThis.clearTimeout = () => {};
+  globalThis.fetch = async (url) => {
+    const value = String(url);
+    calls.push(value);
+    if (value.endsWith("/api/gwent/status")) {
+      const afterClaim = calls.filter((item) => item.endsWith("/api/gwent/ad/claim")).length > 0;
+      return responseJson({
+        success: true,
+        data: {
+          charges_current: 2,
+          charges_max: 2,
+          extra_draws_left: 0,
+          tasks: {
+            task2: {
+              done_count: afterClaim ? 1 : 0,
+              daily_cap: 3,
+              next_available_at: afterClaim ? 2_000 : 0,
+              min_interval_sec: 7_200,
+              reward_type: "charge",
+              reward_amount: 1,
+            },
+          },
+        },
+      });
+    }
+    if (value.endsWith("/api/gwent/ad/start")) {
+      return responseJson({ success: true, data: { duration_sec: 1 } });
+    }
+    if (value.endsWith("/api/gwent/ad/claim")) {
+      return responseJson({ success: true, message: "领取成功" });
+    }
+    throw new Error(`draw must not be sent: ${url}`);
+  };
+
+  try {
+    const response = await handleRequest(
+      request("/api/admin/run", {
+        method: "POST",
+        token: "admin-secret",
+        headers: { "idempotency-key": "ad-full-charge-no-draw-01" },
+        body: { action: "ad", account_keys: ["all"] },
+      }),
+      env,
+    );
+    assert.equal(response.status, 200);
+    const data = await response.json();
+    assert.equal(data.status, "success");
+    assert.equal(data.successful_draws, 0);
+    assert.equal(calls.some((url) => url.endsWith("/api/gwent/share_unlock")), false);
+    assert.equal(calls.some((url) => url.endsWith("/api/gwent/draw")), false);
+    assert.match(data.results[0].steps[0].message, /上限/u);
+  } finally {
+    globalThis.fetch = originalFetch;
+    globalThis.setTimeout = originalSetTimeout;
+    globalThis.clearTimeout = originalClearTimeout;
   }
 });
 
@@ -1380,6 +1563,152 @@ test("a pending quiz reward is consumed even when the quiz is already completed"
     assert.equal(calls.filter((url) => url.endsWith("/api/gwent/draw")).length, 1);
     assert.equal(env.STATE_DB.value(`reward-queue:${key}`).items[0].status, "completed");
     assert.equal(env.STATE_DB.value("gwent-history-v1.json").events[0].event_id, `reward:${rewardKey}`);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("a pending reward stays queued when no draw charge is available", async () => {
+  const account = {
+    name: "一号",
+    url: "https://vsllm.com",
+    user_id: "101",
+    session: "cookie-value",
+  };
+  const key = await accountKey(account, 1);
+  const rewardKey = `quiz:2026-07-18:${key}`;
+  const env = envWith({
+    "newapi-config.json": { accounts: [account] },
+    "automation-settings-v1.json": DEFAULT_SETTINGS,
+    "migration:bonus-quota-v1": { version: 1, multiplier: 1.5 },
+    [`reward-queue:${key}`]: {
+      schema_version: 1,
+      account_key: key,
+      updated_at: "2026-07-18T00:00:00.000Z",
+      items: [{
+        key: rewardKey,
+        source: "quiz",
+        local_date: "2026-07-18",
+        reason: "答题奖励",
+        status: "pending",
+        created_at: "2026-07-18T00:00:00.000Z",
+        history_recorded: false,
+      }],
+    },
+  });
+  const calls = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const value = String(url);
+    calls.push(value);
+    if (value.endsWith("/api/gwent/status")) {
+      return responseJson({
+        success: true,
+        data: {
+          charges_current: 0,
+          extra_draws_left: 0,
+          tasks: { task3: { status: "completed" } },
+        },
+      });
+    }
+    throw new Error(`draw must not be sent: ${url}`);
+  };
+
+  try {
+    const response = await handleRequest(
+      request("/api/admin/run", {
+        method: "POST",
+        token: "admin-secret",
+        headers: { "idempotency-key": "quiz-reward-deferred-01" },
+        body: { action: "quiz", account_keys: ["all"] },
+      }),
+      env,
+    );
+    assert.equal(response.status, 200);
+    const data = await response.json();
+    assert.equal(data.successful_draws, 0);
+    assert.equal(env.STATE_DB.value(`reward-queue:${key}`).items[0].status, "pending");
+    assert.equal(calls.filter((url) => url.endsWith("/api/gwent/draw")).length, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("video reward queue drains at most the configured three pending draws", async () => {
+  const account = {
+    name: "一号",
+    url: "https://vsllm.com",
+    user_id: "101",
+    session: "cookie-value",
+  };
+  const key = await accountKey(account, 1);
+  const items = Array.from({ length: 5 }, (_, index) => ({
+    key: `ad:2026-07-18:${key}:${index + 1}`,
+    source: "ad",
+    local_date: "2026-07-18",
+    ordinal: index + 1,
+    reason: `视频奖励 ${index + 1}`,
+    status: "pending",
+    created_at: `2026-07-18T00:0${index}:00.000Z`,
+    history_recorded: false,
+  }));
+  const env = envWith({
+    "newapi-config.json": { accounts: [account] },
+    "automation-settings-v1.json": DEFAULT_SETTINGS,
+    "migration:bonus-quota-v1": { version: 1, multiplier: 1.5 },
+    [`reward-queue:${key}`]: {
+      schema_version: 1,
+      account_key: key,
+      updated_at: "2026-07-18T00:00:00.000Z",
+      items,
+    },
+  });
+  let drawCount = 0;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const value = String(url);
+    if (value.endsWith("/api/gwent/status")) {
+      return responseJson({
+        success: true,
+        data: {
+          charges_current: 5,
+          extra_draws_left: 0,
+          tasks: { task2: { done_count: 3, daily_cap: 3, next_available_at: 0 } },
+        },
+      });
+    }
+    if (value.endsWith("/api/gwent/share_unlock")) {
+      return responseJson({ success: true, message: "已激活" });
+    }
+    if (value.endsWith("/api/gwent/draw")) {
+      drawCount += 1;
+      return responseJson({
+        success: true,
+        data: {
+          prize: { name: "奖励卡", quota: 1000, rarity: "common" },
+          charges_current: 5 - drawCount,
+          extra_draws_left: 0,
+        },
+      });
+    }
+    throw new Error(`Unexpected URL: ${url}`);
+  };
+
+  try {
+    const response = await handleRequest(
+      request("/api/admin/run", {
+        method: "POST",
+        token: "admin-secret",
+        headers: { "idempotency-key": "ad-reward-queue-cap-01" },
+        body: { action: "ad", account_keys: ["all"] },
+      }),
+      env,
+    );
+    assert.equal(response.status, 200);
+    assert.equal(drawCount, 3);
+    const queue = env.STATE_DB.value(`reward-queue:${key}`).items;
+    assert.equal(queue.filter((item) => item.status === "completed").length, 3);
+    assert.equal(queue.filter((item) => item.status === "pending").length, 2);
   } finally {
     globalThis.fetch = originalFetch;
   }

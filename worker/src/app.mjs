@@ -1361,30 +1361,81 @@ async function runAccountAction({
     return result;
   }
 
-  async function consumePendingRewards(source, enabled) {
+  async function readAvailableDraws() {
+    const status = await getGwentStatus(account);
+    if (!status?.ok) {
+      return {
+        ok: false,
+        available: null,
+        status: status?.status || "error",
+        message: status?.message || "无法读取翻牌次数，已暂缓奖励翻牌。",
+      };
+    }
+    if (!Number.isSafeInteger(status.available) || status.available < 0) {
+      return {
+        ok: false,
+        available: null,
+        status: "unknown",
+        message: "无法确认当前可用翻牌次数，已暂缓翻牌。",
+      };
+    }
+    return { ok: true, available: status.available, status: "success" };
+  }
+
+  async function consumePendingRewards(source, enabled, maximumPendingDraws) {
     if (!enabled) return [];
     const items = await rewardsAwaitingHistory(env, key, source);
     const draws = [];
+    const terminalItems = [];
+    const pendingItems = [];
     for (const item of items) {
-      let result;
       if (item.status === "terminal") {
-        result = restoredDrawResult({
-          phase: "terminal",
-          status: item.outcome,
-          result: item.result,
-        });
-        recordDrawEvent(source, result, `reward:${item.key}`);
-      } else {
-        result = await performDraw(source, item.reason, {
-          intentId: item.key,
-          eventId: `reward:${item.key}`,
-        });
+        terminalItems.push(item);
+        continue;
       }
+      const intent = await readState(env, `draw-intent:${item.key}`, { legacy: false });
+      if (isTerminalDrawIntent(intent?.value)) {
+        terminalItems.push({ ...item, intent: intent.value });
+      } else {
+        pendingItems.push(item);
+      }
+    }
+    for (const item of terminalItems) {
+      const result = restoredDrawResult({
+        phase: "terminal",
+        status: item.intent?.status || item.outcome,
+        result: item.intent?.result || item.result,
+      });
+      recordDrawEvent(source, result, `reward:${item.key}`);
       draws.push(result);
       if (result?.intent_terminal === true) {
         if (item.status !== "terminal") await markRewardTerminal(env, key, item.key, result);
         rewardAcks.push(item.key);
       }
+    }
+
+    let pendingDraws = 0;
+    let availability;
+    for (const item of pendingItems) {
+      if (pendingDraws >= maximumPendingDraws) break;
+      if (availability === undefined) availability = await readAvailableDraws();
+      if (!availability.ok || availability.available <= 0) break;
+      let result;
+      result = await performDraw(source, item.reason, {
+        intentId: item.key,
+        eventId: `reward:${item.key}`,
+      });
+      pendingDraws += 1;
+      draws.push(result);
+      if (result?.intent_terminal === true) {
+        await markRewardTerminal(env, key, item.key, result);
+        rewardAcks.push(item.key);
+      }
+      if (!okResult(result)) break;
+      const reportedAvailable = Number(result?.available_after);
+      availability.available = Number.isSafeInteger(reportedAvailable)
+        ? Math.max(0, reportedAvailable)
+        : Math.max(0, availability.available - 1);
     }
     return draws;
   }
@@ -1425,7 +1476,7 @@ async function runAccountAction({
     } catch (error) {
       result = { ok: false, success: false, status: "error", message: safeError(error) };
     }
-    if (result?.reward_ready && settings.quiz.draw_after_success) {
+    if (result?.reward_draw_ready === true && settings.quiz.draw_after_success) {
       const date = localDate();
       await enqueueReward(env, key, {
         key: `quiz:${date}:${key}`,
@@ -1434,7 +1485,11 @@ async function runAccountAction({
         reason: "答题奖励",
       });
     }
-    const draws = await consumePendingRewards("quiz", settings.quiz.draw_after_success);
+    const draws = await consumePendingRewards(
+      "quiz",
+      settings.quiz.draw_after_success,
+      1,
+    );
     const combined = combinedRewardResult(result, draws, "答题已完成");
     snapshots.push(statusSnapshot("quiz", account, key, combined));
     steps.push({ action: "quiz", ...combined });
@@ -1448,12 +1503,16 @@ async function runAccountAction({
     } catch (error) {
       result = { ok: false, success: false, status: "error", message: safeError(error) };
     }
-    if (result?.reward_ready && settings.ad.draw_after_claim) {
+    if (result?.reward_draw_ready === true && settings.ad.draw_after_claim) {
       const date = localDate();
       const ordinal = Number(
         result?.after_done_count ?? result?.done_count ?? result?.task?.done_count,
       );
-      if (!Number.isSafeInteger(ordinal) || ordinal < 1 || ordinal > 3) {
+      if (
+        !Number.isSafeInteger(ordinal) ||
+        ordinal < 1 ||
+        ordinal > settings.ad.daily_limit
+      ) {
         result = {
           ...result,
           ok: false,
@@ -1471,7 +1530,11 @@ async function runAccountAction({
         });
       }
     }
-    const draws = await consumePendingRewards("ad", settings.ad.draw_after_claim);
+    const draws = await consumePendingRewards(
+      "ad",
+      settings.ad.draw_after_claim,
+      settings.ad.daily_limit,
+    );
     const combined = combinedRewardResult(result, draws, "视频奖励已领取");
     snapshots.push(statusSnapshot("ad", account, key, combined));
     steps.push({ action: "ad", ...combined });
@@ -1486,10 +1549,15 @@ async function runAccountAction({
     } else if (action === "ad") {
       await performAd();
     } else if (action === "draw") {
-      const status = await getGwentStatus(account);
-      const available = Number.isFinite(Number(status?.available)) ? Number(status.available) : null;
-      const planned = available === null ? drawCount : Math.min(drawCount, Math.max(0, available));
-      if (planned === 0) {
+      const availability = await readAvailableDraws();
+      if (!availability.ok) {
+        steps.push({
+          action: "draw",
+          ok: false,
+          status: availability.status,
+          message: availability.message,
+        });
+      } else if (availability.available === 0) {
         steps.push({
           action: "draw",
           ok: true,
@@ -1498,6 +1566,7 @@ async function runAccountAction({
           message: "当前没有可用翻牌次数。",
         });
       } else {
+        const planned = Math.min(drawCount, availability.available);
         for (let attempt = 0; attempt < planned; attempt += 1) {
           const result = await performDraw("gwent", "常规翻牌");
           steps.push({ action: "draw", ...result });
@@ -1509,8 +1578,26 @@ async function runAccountAction({
       if (account.isVsllm) {
         await performQuiz();
         await performAd();
-        const result = await performDraw("gwent", "手动执行全部任务");
-        steps.push({ action: "draw", ...result });
+        const availability = await readAvailableDraws();
+        if (!availability.ok) {
+          steps.push({
+            action: "draw",
+            ok: false,
+            status: availability.status,
+            message: availability.message,
+          });
+        } else if (availability.available === 0) {
+          steps.push({
+            action: "draw",
+            ok: true,
+            skipped: true,
+            status: "cooldown",
+            message: "当前没有可用翻牌次数，已跳过额外常规翻牌。",
+          });
+        } else {
+          const result = await performDraw("gwent", "手动执行全部任务");
+          steps.push({ action: "draw", ...result });
+        }
       }
     } else {
       throw new HttpError(400, "invalid_action", "不支持的任务类型。 ");
@@ -2147,10 +2234,14 @@ async function balancesData(env, accountKeys = ["all"]) {
               ),
               available: gwentOk ? gwentInteger(gwentResult?.available) : null,
               charges_current: gwentOk ? gwentInteger(gwentResult?.charges_current) : null,
+              charges_max: gwentOk ? gwentInteger(gwentResult?.charges_max) : null,
               extra_draws_left: gwentOk ? gwentInteger(gwentResult?.extra_draws_left) : null,
               next_available_at: gwentOk ? gwentInteger(gwentResult?.next_available_at) : null,
               next_charge_at: gwentOk ? gwentInteger(gwentResult?.next_charge_at) : null,
               cooldown_seconds: gwentOk ? gwentInteger(gwentResult?.cooldown_seconds) : null,
+              ad_min_interval_seconds: gwentOk
+                ? gwentInteger(gwentResult?.ad?.min_interval_seconds)
+                : null,
               checked_at: checkedAt,
             }
           : {
@@ -2160,10 +2251,12 @@ async function balancesData(env, accountKeys = ["all"]) {
               message: "该账号不支持翻牌",
               available: null,
               charges_current: null,
+              charges_max: null,
               extra_draws_left: null,
               next_available_at: null,
               next_charge_at: null,
               cooldown_seconds: null,
+              ad_min_interval_seconds: null,
               checked_at: checkedAt,
             },
       };

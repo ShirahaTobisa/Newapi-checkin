@@ -43,15 +43,19 @@ function queuedFetch(entries) {
 }
 
 function statusPayload({ quiz, ad, ...data } = {}) {
+  const taskWithReward = (task) => task
+    ? { reward_type: "charge", reward_amount: 1, ...task }
+    : null;
   return {
     success: true,
     data: {
       charges_current: 2,
       extra_draws_left: 1,
+      charges_max: 5,
       ...data,
       tasks: {
-        ...(quiz ? { task3: quiz } : {}),
-        ...(ad ? { task2: ad } : {}),
+        ...(taskWithReward(quiz) ? { task3: taskWithReward(quiz) } : {}),
+        ...(taskWithReward(ad) ? { task2: taskWithReward(ad) } : {}),
       },
     },
   };
@@ -257,7 +261,13 @@ test("getGwentStatus exposes only normalized charges and task state", async () =
   const mock = queuedFetch([
     jsonResponse(statusPayload({
       quiz: { status: "pending", debug_token: "hidden" },
-      ad: { done_count: 1, daily_cap: 99, next_available_at: 2_000, duration_sec: 12 },
+      ad: {
+        done_count: 1,
+        daily_cap: 99,
+        next_available_at: 2_000,
+        duration_sec: 12,
+        min_interval_sec: 7_200,
+      },
       next_charge_at: 3_000,
       secret: "not-public",
     })),
@@ -266,11 +276,20 @@ test("getGwentStatus exposes only normalized charges and task state", async () =
   const result = await getGwentStatus(existingAccount, { fetch: mock.fetch, now: 1_000 });
   assert.equal(result.ok, true);
   assert.equal(result.available, 3);
-  assert.deepEqual(result.quiz, { status: "pending", suspended: false });
+  assert.equal(result.charges_max, 5);
+  assert.deepEqual(result.quiz, {
+    status: "pending",
+    suspended: false,
+    reward_type: "charge",
+    reward_amount: 1,
+  });
   assert.equal(result.ad.status, "cooldown");
   assert.equal(result.ad.done_count, 1);
   assert.equal(result.ad.daily_cap, 3);
   assert.equal(result.ad.next_available_at, 2_000);
+  assert.equal(result.ad.min_interval_seconds, 7_200);
+  assert.equal(result.ad.reward_type, "charge");
+  assert.equal(result.ad.reward_amount, 1);
   assert.doesNotMatch(JSON.stringify(result), /hidden|not-public/u);
 });
 
@@ -438,6 +457,7 @@ test("runQuiz tries the known answer first and leaves reward drawing to the call
       data: { question: { text: "v9.11 和 v9.9 哪个更大？", options: ["v9.9", "v9.11"] } },
     }),
     jsonResponse({ success: true, data: { correct: true } }),
+    jsonResponse(statusPayload({ charges_current: 3, quiz: { status: "won" } })),
   ]);
 
   const result = await runQuiz(existingAccount, {
@@ -446,14 +466,89 @@ test("runQuiz tries the known answer first and leaves reward drawing to the call
   });
   assert.equal(result.ok, true);
   assert.equal(result.reward_ready, true);
+  assert.equal(result.reward_draw_ready, true);
+  assert.equal(result.reward_status, "confirmed");
   assert.equal(result.newly_completed, true);
   assert.deepEqual(result.attempts, [{ answer_index: 1, correct: true }]);
   assert.deepEqual(sleeps, [2200]);
   assert.deepEqual(
     mock.calls.map((call) => new URL(call.url).pathname),
-    ["/api/gwent/status", "/api/gwent/task3/start", "/api/gwent/task3/answer"],
+    [
+      "/api/gwent/status",
+      "/api/gwent/task3/start",
+      "/api/gwent/task3/answer",
+      "/api/gwent/status",
+    ],
   );
   assert.deepEqual(JSON.parse(mock.calls[2].init.body), { answer_index: 1 });
+});
+
+test("runQuiz treats won as completed but retries an upstream lost state", async () => {
+  const won = queuedFetch([
+    jsonResponse(statusPayload({ quiz: { status: "won" } })),
+  ]);
+  const wonResult = await runQuiz(existingAccount, { fetch: won.fetch });
+  assert.equal(wonResult.ok, true);
+  assert.equal(wonResult.skipped, true);
+  assert.equal(wonResult.completed, true);
+  assert.equal(wonResult.reward_ready, false);
+  assert.equal(won.calls.length, 1);
+
+  const lost = queuedFetch([
+    jsonResponse(statusPayload({ quiz: { status: "lost" } })),
+    jsonResponse({
+      success: true,
+      data: { question: { text: "重试题", options: ["A"] } },
+    }),
+    jsonResponse({ success: true, data: { correct: true } }),
+    jsonResponse(statusPayload({ charges_current: 3, quiz: { status: "won" } })),
+  ]);
+  const lostResult = await runQuiz(existingAccount, {
+    fetch: lost.fetch,
+    sleep: async () => {},
+  });
+  assert.equal(lostResult.ok, true);
+  assert.equal(lostResult.reward_ready, true);
+  assert.equal(lostResult.reward_draw_ready, true);
+  assert.equal(lostResult.reward_status, "confirmed");
+  assert.equal(lostResult.newly_completed, true);
+  assert.deepEqual(
+    lost.calls.map((call) => new URL(call.url).pathname),
+    [
+      "/api/gwent/status",
+      "/api/gwent/task3/start",
+      "/api/gwent/task3/answer",
+      "/api/gwent/status",
+    ],
+  );
+});
+
+test("runQuiz does not schedule a draw when the charge pool is already full", async () => {
+  const mock = queuedFetch([
+    jsonResponse(statusPayload({
+      charges_current: 2,
+      charges_max: 2,
+      quiz: { status: "pending" },
+    })),
+    jsonResponse({
+      success: true,
+      data: { question: { text: "满池测试题", options: ["A"] } },
+    }),
+    jsonResponse({ success: true, data: { correct: true } }),
+    jsonResponse(statusPayload({
+      charges_current: 2,
+      charges_max: 2,
+      quiz: { status: "won" },
+    })),
+  ]);
+  const result = await runQuiz(existingAccount, {
+    fetch: mock.fetch,
+    sleep: async () => {},
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.reward_ready, true);
+  assert.equal(result.reward_draw_ready, false);
+  assert.equal(result.reward_status, "capped");
 });
 
 test("runQuiz tries remaining alternatives but never exceeds twenty answers", async () => {
@@ -514,6 +609,7 @@ test("runAd waits at most 121 seconds, claims once, refreshes status, and never 
     jsonResponse({ success: true, data: { duration_sec: 999 } }),
     jsonResponse({ success: true, message: "领取成功" }),
     jsonResponse(statusPayload({
+      charges_current: 3,
       ad: { done_count: 1, daily_cap: 99, next_available_at: 2_000 },
     })),
   ]);
@@ -526,6 +622,8 @@ test("runAd waits at most 121 seconds, claims once, refreshes status, and never 
   assert.equal(result.ok, true);
   assert.equal(result.status, "claimed");
   assert.equal(result.reward_ready, true);
+  assert.equal(result.reward_draw_ready, true);
+  assert.equal(result.reward_status, "confirmed");
   assert.equal(result.newly_completed, true);
   assert.equal(result.duration_seconds, 120);
   assert.equal(result.task.done_count, 1);
@@ -546,6 +644,7 @@ test("runAd reconciles an uncertain claim when the refreshed count increased", a
     jsonResponse({ success: true, data: { duration_sec: 1 } }),
     new TypeError("connection reset"),
     jsonResponse(statusPayload({
+      charges_current: 3,
       ad: { done_count: 2, daily_cap: 3, next_available_at: 3_000 },
     })),
   ]);
@@ -557,6 +656,8 @@ test("runAd reconciles an uncertain claim when the refreshed count increased", a
   });
   assert.equal(result.ok, true);
   assert.equal(result.reward_ready, true);
+  assert.equal(result.reward_draw_ready, true);
+  assert.equal(result.reward_status, "confirmed");
   assert.equal(result.after_done_count, 2);
   assert.equal(mock.calls.length, 4);
 });
@@ -585,6 +686,7 @@ test("runAd applies a stricter configured daily limit to skip and completion sta
     jsonResponse({ success: true, data: { duration_sec: 1 } }),
     jsonResponse({ success: true }),
     jsonResponse(statusPayload({
+      charges_current: 3,
       ad: { done_count: 1, daily_cap: 3, next_available_at: 2_000 },
     })),
   ]);
@@ -598,4 +700,30 @@ test("runAd applies a stricter configured daily limit to skip and completion sta
   assert.equal(completed.task_status, "completed");
   assert.equal(completed.task.completed, true);
   assert.equal(completed.task.daily_cap, 1);
+});
+
+test("runAd suppresses the reward draw when a successful claim cannot add charge", async () => {
+  const mock = queuedFetch([
+    jsonResponse(statusPayload({
+      charges_current: 2,
+      charges_max: 2,
+      ad: { done_count: 0, daily_cap: 3, next_available_at: 0 },
+    })),
+    jsonResponse({ success: true, data: { duration_sec: 1 } }),
+    jsonResponse({ success: true }),
+    jsonResponse(statusPayload({
+      charges_current: 2,
+      charges_max: 2,
+      ad: { done_count: 1, daily_cap: 3, next_available_at: 2_000 },
+    })),
+  ]);
+  const result = await runAd(existingAccount, {
+    fetch: mock.fetch,
+    sleep: async () => {},
+    now: 1_000,
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.reward_ready, true);
+  assert.equal(result.reward_draw_ready, false);
+  assert.equal(result.reward_status, "capped");
 });
