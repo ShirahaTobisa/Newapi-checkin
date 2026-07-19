@@ -48,6 +48,8 @@ const TASK_STATUS_KEYS = Object.freeze({
 });
 const SETTINGS_KEY = "automation-settings-v1.json";
 const NOTIFICATION_CONFIG_KEY = "notification-config-v1.json";
+const BONUS_QUOTA_MIGRATION_KEY = "migration:bonus-quota-v1";
+const BONUS_QUOTA_MIGRATION_VERSION = 1;
 const KNOWN_LEGACY_KEYS = Object.freeze([
   CONFIG_KEY,
   HISTORY_KEY,
@@ -110,6 +112,64 @@ const INSERT_AUTOMATION_EVENT_SQL = `
     local_date, status, prize_name, prize_quota, prize_rarity,
     bonus_percent, message, task_type
   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`;
+const UPDATE_BONUS_QUOTA_HISTORY_SQL = `
+  UPDATE state_documents
+  SET value_json = ?, version = version + 1, updated_at = ?
+  WHERE state_key = ? AND version = ?
+    AND NOT EXISTS (
+      SELECT 1 FROM state_documents WHERE state_key = ?
+    )
+`;
+const UPDATE_BONUS_QUOTA_RUNS_SQL = `
+  UPDATE automation_runs AS run
+  SET total_quota = total_quota + COALESCE((
+    SELECT SUM(
+      CAST((event.prize_quota * 3 + 1) / 2 AS INTEGER) - event.prize_quota
+    )
+    FROM automation_events AS event
+    WHERE event.run_id = run.run_id
+      AND event.status = 'success'
+      AND event.bonus_percent = 50
+      AND event.prize_quota > 0
+  ), 0)
+  WHERE EXISTS (
+    SELECT 1 FROM automation_events AS event
+    WHERE event.run_id = run.run_id
+      AND event.status = 'success'
+      AND event.bonus_percent = 50
+      AND event.prize_quota > 0
+  )
+    AND EXISTS (
+      SELECT 1 FROM state_documents
+      WHERE state_key = ?
+        AND json_extract(value_json, '$.bonus_quota_migration.version') = ?
+    )
+    AND NOT EXISTS (
+      SELECT 1 FROM state_documents WHERE state_key = ?
+    )
+`;
+const UPDATE_BONUS_QUOTA_EVENTS_SQL = `
+  UPDATE automation_events
+  SET prize_quota = CAST((prize_quota * 3 + 1) / 2 AS INTEGER)
+  WHERE status = 'success' AND bonus_percent = 50 AND prize_quota > 0
+    AND EXISTS (
+      SELECT 1 FROM state_documents
+      WHERE state_key = ?
+        AND json_extract(value_json, '$.bonus_quota_migration.version') = ?
+    )
+    AND NOT EXISTS (
+      SELECT 1 FROM state_documents WHERE state_key = ?
+    )
+`;
+const INSERT_BONUS_QUOTA_MIGRATION_SQL = `
+  INSERT OR IGNORE INTO state_documents (state_key, value_json, version, updated_at)
+  SELECT ?, ?, 1, ?
+  WHERE EXISTS (
+    SELECT 1 FROM state_documents
+    WHERE state_key = ?
+      AND json_extract(value_json, '$.bonus_quota_migration.version') = ?
+  )
 `;
 
 class HttpError extends Error {
@@ -493,6 +553,222 @@ async function backfillFullHistory(env) {
     events_seen: events.length,
     runs_inserted: inserted.runs,
     events_inserted: inserted.events,
+  };
+}
+
+function adjustedBonusQuota(value, bonusPercent) {
+  const quota = historyInteger(value);
+  if (quota <= 0 || Number(bonusPercent) !== 50) return quota;
+  return Math.round((quota * 3) / 2);
+}
+
+function adjustLegacyHistoryBonusQuotas(history, appliedAt) {
+  const current = history && typeof history === "object" ? history : emptyHistory();
+  const existingMigration = current.bonus_quota_migration;
+  if (
+    existingMigration &&
+    Number(existingMigration.version) === BONUS_QUOTA_MIGRATION_VERSION
+  ) {
+    return {
+      history: current,
+      adjusted_events: 0,
+      quota_added: 0,
+      already_adjusted: true,
+    };
+  }
+
+  const accountDeltas = new Map();
+  const prizeDeltas = new Map();
+  const dailyDeltas = new Map();
+  const runDeltas = new Map();
+  let adjustedEvents = 0;
+  let quotaAdded = 0;
+  const events = (Array.isArray(current.events) ? current.events : []).map((event) => {
+    const rawQuota = historyInteger(event?.prize_quota);
+    const adjustedQuota = event?.status === "success"
+      ? adjustedBonusQuota(rawQuota, event?.bonus_percent)
+      : rawQuota;
+    if (adjustedQuota === rawQuota) return event;
+
+    const delta = adjustedQuota - rawQuota;
+    adjustedEvents += 1;
+    quotaAdded += delta;
+    if (event?.status === "success") {
+      const accountKey = String(event.account_key || "");
+      accountDeltas.set(accountKey, (accountDeltas.get(accountKey) || 0) + delta);
+      const prizeName = String(event.prize_name || "未知奖品");
+      prizeDeltas.set(prizeName, (prizeDeltas.get(prizeName) || 0) + delta);
+      const date =
+        typeof event.local_date === "string" && event.local_date.length > 0
+          ? event.local_date
+          : localDate(new Date(event.occurred_at || appliedAt));
+      dailyDeltas.set(date, (dailyDeltas.get(date) || 0) + delta);
+      const runId = String(event.run_id || "");
+      runDeltas.set(runId, (runDeltas.get(runId) || 0) + delta);
+    }
+    return { ...event, prize_quota: adjustedQuota };
+  });
+
+  const accounts = (Array.isArray(current.accounts) ? current.accounts : []).map((account) => ({
+    ...account,
+    total_quota:
+      historyInteger(account.total_quota) + (accountDeltas.get(String(account.account_key)) || 0),
+  }));
+  const prizes = (Array.isArray(current.prizes) ? current.prizes : []).map((prize) => ({
+    ...prize,
+    total_quota:
+      historyInteger(prize.total_quota) + (prizeDeltas.get(String(prize.prize_name)) || 0),
+  }));
+  const daily = (Array.isArray(current.daily) ? current.daily : []).map((day) => ({
+    ...day,
+    total_quota: historyInteger(day.total_quota) + (dailyDeltas.get(String(day.date)) || 0),
+  }));
+  const runs = (Array.isArray(current.runs) ? current.runs : []).map((run) => ({
+    ...run,
+    total_quota: historyInteger(run.total_quota) + (runDeltas.get(String(run.run_id)) || 0),
+  }));
+  const totals = {
+    ...(current.totals || emptyHistory().totals),
+    total_quota: historyInteger(current.totals?.total_quota) + quotaAdded,
+  };
+  return {
+    history: {
+      ...current,
+      totals,
+      accounts,
+      prizes,
+      daily,
+      runs,
+      events,
+      bonus_quota_migration: {
+        version: BONUS_QUOTA_MIGRATION_VERSION,
+        multiplier: 1.5,
+        applied_at: appliedAt,
+        adjusted_events: adjustedEvents,
+        quota_added: quotaAdded,
+      },
+      updated_at: current.updated_at || appliedAt,
+    },
+    adjusted_events: adjustedEvents,
+    quota_added: quotaAdded,
+    already_adjusted: false,
+  };
+}
+
+function migrationBatchChanges(result) {
+  return historyInteger(result?.meta?.changes);
+}
+
+async function migrateBonusQuotas(env) {
+  const database = historyDatabase(env);
+  const existingMarker = await readState(env, BONUS_QUOTA_MIGRATION_KEY, { legacy: false });
+  if (Number(existingMarker?.value?.version) === BONUS_QUOTA_MIGRATION_VERSION) {
+    return {
+      status: "already_applied",
+      ...existingMarker.value,
+      version: BONUS_QUOTA_MIGRATION_VERSION,
+      multiplier: 1.5,
+      d1_events_adjusted: 0,
+      d1_runs_adjusted: 0,
+    };
+  }
+
+  let historyState = await readState(env, HISTORY_KEY);
+  if (historyState === null) {
+    historyState = await putState(env, HISTORY_KEY, emptyHistory());
+  }
+  const history = historyState?.value || emptyHistory();
+  const appliedAt = new Date().toISOString();
+  const adjusted = adjustLegacyHistoryBonusQuotas(history, appliedAt);
+  if (adjusted.already_adjusted) {
+    // A previous attempt may have committed the history document before the
+    // marker. Reconcile the marker without touching any quota a second time.
+    const marker = {
+      version: BONUS_QUOTA_MIGRATION_VERSION,
+      multiplier: 1.5,
+      applied_at: history.bonus_quota_migration.applied_at || appliedAt,
+      adjusted_events: history.bonus_quota_migration.adjusted_events || 0,
+      quota_added: history.bonus_quota_migration.quota_added || 0,
+    };
+    const markerValue = JSON.stringify(marker);
+    const markerResult = await database
+      .prepare(INSERT_BONUS_QUOTA_MIGRATION_SQL)
+      .bind(
+        BONUS_QUOTA_MIGRATION_KEY,
+        markerValue,
+        appliedAt,
+        HISTORY_KEY,
+        BONUS_QUOTA_MIGRATION_VERSION,
+      )
+      .run();
+    return {
+      status: migrationBatchChanges(markerResult) > 0 ? "applied" : "already_applied",
+      ...marker,
+      d1_events_adjusted: 0,
+      d1_runs_adjusted: 0,
+    };
+  }
+
+  const serializedHistory = JSON.stringify(adjusted.history);
+  const marker = {
+    version: BONUS_QUOTA_MIGRATION_VERSION,
+    multiplier: 1.5,
+    applied_at: appliedAt,
+    adjusted_events: adjusted.adjusted_events,
+    quota_added: adjusted.quota_added,
+  };
+  const markerValue = JSON.stringify(marker);
+  let results;
+  try {
+    results = await database.batch([
+      database
+        .prepare(UPDATE_BONUS_QUOTA_HISTORY_SQL)
+        .bind(
+          serializedHistory,
+          appliedAt,
+          HISTORY_KEY,
+          historyState?.version || 1,
+          BONUS_QUOTA_MIGRATION_KEY,
+        ),
+      database
+        .prepare(UPDATE_BONUS_QUOTA_RUNS_SQL)
+        .bind(HISTORY_KEY, BONUS_QUOTA_MIGRATION_VERSION, BONUS_QUOTA_MIGRATION_KEY),
+      database
+        .prepare(UPDATE_BONUS_QUOTA_EVENTS_SQL)
+        .bind(HISTORY_KEY, BONUS_QUOTA_MIGRATION_VERSION, BONUS_QUOTA_MIGRATION_KEY),
+      database
+        .prepare(INSERT_BONUS_QUOTA_MIGRATION_SQL)
+        .bind(
+          BONUS_QUOTA_MIGRATION_KEY,
+          markerValue,
+          appliedAt,
+          HISTORY_KEY,
+          BONUS_QUOTA_MIGRATION_VERSION,
+        ),
+    ]);
+  } catch (error) {
+    console.error(JSON.stringify({ event: "bonus_quota_migration_failed", error: safeError(error) }));
+    throw new HttpError(500, "bonus_quota_migration_failed", "分享加成历史迁移失败，可安全重试。 ");
+  }
+
+  const markerInserted = migrationBatchChanges(results?.[3]) > 0;
+  if (!markerInserted) {
+    const completed = await readState(env, BONUS_QUOTA_MIGRATION_KEY, { legacy: false });
+    if (Number(completed?.value?.version) === BONUS_QUOTA_MIGRATION_VERSION) {
+      return {
+        status: "already_applied",
+        ...completed.value,
+        d1_events_adjusted: 0,
+        d1_runs_adjusted: 0,
+      };
+    }
+    throw new HttpError(409, "bonus_quota_migration_conflict", "历史正在被其他请求更新，请稍后重试。 ");
+  }
+  return {
+    status: "applied",
+    ...marker,
+    d1_events_adjusted: migrationBatchChanges(results?.[2]),
+    d1_runs_adjusted: migrationBatchChanges(results?.[1]),
   };
 }
 
@@ -1347,6 +1623,18 @@ async function runAutomation(env, {
     trigger === "scheduled" ? slot : validatedManualIdempotencyKey(idempotencyKey);
   if (typeof identity !== "string" || identity.length === 0) {
     throw new HttpError(400, "invalid_idempotency_key", "任务缺少幂等标识。 ");
+  }
+  // The first draw-capable run after deployment performs the legacy quota
+  // migration before contacting VSLLM. This closes the small cutover window
+  // in which a newly adjusted result could otherwise be migrated twice.
+  if (["draw", "quiz", "ad", "all"].includes(action)) {
+    const migrationMarker = await readState(env, BONUS_QUOTA_MIGRATION_KEY, { legacy: false });
+    if (Number(migrationMarker?.value?.version) !== BONUS_QUOTA_MIGRATION_VERSION) {
+      // Import the legacy KV event list before setting the marker; otherwise a
+      // later admin backfill could insert raw rows after the migration ran.
+      await backfillFullHistory(env);
+    }
+    await migrateBonusQuotas(env);
   }
   const settings = await settingsFor(env);
   const count = Math.max(1, Math.min(3, Number(drawCount || settings.draw.draw_count) || 1));
@@ -2213,7 +2501,13 @@ async function handleApi(request, env) {
     await requireAdmin(request, env);
     const migration = await migrateLegacyState(env, KNOWN_LEGACY_KEYS);
     const historyBackfill = await backfillFullHistory(env);
-    return json({ success: true, ...migration, history_backfill: historyBackfill });
+    const bonusQuotaMigration = await migrateBonusQuotas(env);
+    return json({
+      success: true,
+      ...migration,
+      history_backfill: historyBackfill,
+      bonus_quota_migration: bonusQuotaMigration,
+    });
   }
 
   const legacyManual = {

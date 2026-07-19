@@ -33,10 +33,39 @@ class MockStatement {
 
   async run() {
     this.db.writes += 1;
+    if (
+      this.sql.startsWith("INSERT OR IGNORE INTO state_documents") &&
+      this.sql.includes("SELECT ?, ?, 1, ?")
+    ) {
+      const [key, valueJson, updatedAt, historyKey, migrationVersion] = this.values;
+      if (this.db.rows.has(key)) return this.db.result(0);
+      const historyRow = this.db.rows.get(historyKey);
+      const history = historyRow ? JSON.parse(historyRow.value_json) : null;
+      if (history?.bonus_quota_migration?.version !== migrationVersion) {
+        return this.db.result(0);
+      }
+      this.db.rows.set(key, { value_json: valueJson, version: 1, updated_at: updatedAt });
+      return this.db.result(1);
+    }
     if (this.sql.startsWith("INSERT OR IGNORE INTO state_documents")) {
       const [key, valueJson, updatedAt] = this.values;
       if (this.db.rows.has(key)) return this.db.result(0);
       this.db.rows.set(key, { value_json: valueJson, version: 1, updated_at: updatedAt });
+      return this.db.result(1);
+    }
+    if (
+      this.sql.startsWith("UPDATE state_documents SET value_json = ?") &&
+      this.sql.includes("AND NOT EXISTS")
+    ) {
+      const [valueJson, updatedAt, key, expectedVersion, markerKey] = this.values;
+      if (this.db.rows.has(markerKey)) return this.db.result(0);
+      const current = this.db.rows.get(key);
+      if (!current || current.version !== expectedVersion) return this.db.result(0);
+      this.db.rows.set(key, {
+        value_json: valueJson,
+        version: current.version + 1,
+        updated_at: updatedAt,
+      });
       return this.db.result(1);
     }
     if (this.sql.startsWith("UPDATE state_documents SET value_json = ?")) {
@@ -49,6 +78,53 @@ class MockStatement {
         updated_at: updatedAt,
       });
       return this.db.result(1);
+    }
+    if (this.sql.startsWith("UPDATE automation_runs AS run SET total_quota")) {
+      if (this.db.failHistoryWrites) throw new Error("history write failed");
+      const [historyKey, migrationVersion, markerKey] = this.values;
+      const history = this.db.value(historyKey);
+      if (
+        this.db.rows.has(markerKey) ||
+        history?.bonus_quota_migration?.version !== migrationVersion
+      ) {
+        return this.db.result(0);
+      }
+      let changes = 0;
+      for (const run of this.db.automationRuns.values()) {
+        const delta = [...this.db.automationEvents.values()]
+          .filter((event) =>
+            event.run_id === run.run_id &&
+            event.status === "success" &&
+            event.bonus_percent === 50 &&
+            event.prize_quota > 0,
+          )
+          .reduce(
+            (sum, event) => sum + Math.round((event.prize_quota * 3) / 2) - event.prize_quota,
+            0,
+          );
+        if (delta <= 0) continue;
+        run.total_quota += delta;
+        changes += 1;
+      }
+      return this.db.result(changes);
+    }
+    if (this.sql.startsWith("UPDATE automation_events SET prize_quota")) {
+      if (this.db.failHistoryWrites) throw new Error("history write failed");
+      const [historyKey, migrationVersion, markerKey] = this.values;
+      const history = this.db.value(historyKey);
+      if (
+        this.db.rows.has(markerKey) ||
+        history?.bonus_quota_migration?.version !== migrationVersion
+      ) {
+        return this.db.result(0);
+      }
+      let changes = 0;
+      for (const event of this.db.automationEvents.values()) {
+        if (event.status !== "success" || event.bonus_percent !== 50 || event.prize_quota <= 0) continue;
+        event.prize_quota = Math.round((event.prize_quota * 3) / 2);
+        changes += 1;
+      }
+      return this.db.result(changes);
     }
     if (this.sql.startsWith("INSERT OR IGNORE INTO automation_runs")) {
       if (this.db.failHistoryWrites) throw new Error("history write failed");
@@ -204,8 +280,15 @@ class MockD1 {
   }
 
   async batch(statements) {
-    const runSnapshot = new Map(this.automationRuns);
-    const eventSnapshot = new Map(this.automationEvents);
+    const rowSnapshot = new Map(
+      [...this.rows].map(([key, value]) => [key, { ...value }]),
+    );
+    const runSnapshot = new Map(
+      [...this.automationRuns].map(([key, value]) => [key, { ...value }]),
+    );
+    const eventSnapshot = new Map(
+      [...this.automationEvents].map(([key, value]) => [key, { ...value }]),
+    );
     try {
       const results = [];
       for (const statement of statements) {
@@ -215,6 +298,7 @@ class MockD1 {
       }
       return results;
     } catch (error) {
+      this.rows = rowSnapshot;
       this.automationRuns = runSnapshot;
       this.automationEvents = eventSnapshot;
       throw error;
@@ -756,7 +840,7 @@ test("dashboard does not reuse yesterday task status and marks removed accounts 
   assert.equal(data.accounts.find((account) => account.account_key === "aaaaaaaaaaaaaaaa").configured, false);
 });
 
-test("manual draw is idempotent and records a 500000 quota prize once", async () => {
+test("manual draw is idempotent and records the bonus-adjusted quota once", async () => {
   const env = envWith({
     "newapi-config.json": {
       accounts: [
@@ -805,7 +889,7 @@ test("manual draw is idempotent and records a 500000 quota prize once", async ()
     );
     assert.equal(first.status, 200);
     const firstData = await first.json();
-    assert.equal(firstData.total_quota, 500000);
+    assert.equal(firstData.total_quota, 750000);
     assert.equal(firstData.successful_draws, 1);
 
     const second = await handleRequest(
@@ -819,12 +903,93 @@ test("manual draw is idempotent and records a 500000 quota prize once", async ()
     );
     assert.equal(second.status, 200);
     const secondData = await second.json();
-    assert.equal(secondData.total_quota, 500000);
+    assert.equal(secondData.total_quota, 750000);
     assert.equal(calls.length, 3);
-    assert.equal(env.STATE_DB.value("gwent-history-v1.json").totals.total_quota, 500000);
+    assert.equal(env.STATE_DB.value("gwent-history-v1.json").totals.total_quota, 750000);
     assert.equal(env.STATE_DB.automationRuns.size, 1);
     assert.equal(env.STATE_DB.automationEvents.size, 1);
-    assert.equal([...env.STATE_DB.automationEvents.values()][0].prize_quota, 500000);
+    assert.equal([...env.STATE_DB.automationEvents.values()][0].prize_quota, 750000);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("first draw backfills legacy history before applying the quota migration", async () => {
+  const account = {
+    name: "一号",
+    url: "https://vsllm.com",
+    user_id: "101",
+    session: "cookie-value",
+  };
+  const legacy = emptyHistory();
+  legacy.runs = [{
+    run_id: "legacy-before-first-draw",
+    run_number: 1,
+    run_attempt: 1,
+    started_at: "2026-07-18T00:00:00.000Z",
+    finished_at: "2026-07-18T00:01:00.000Z",
+    planned_draws: 1,
+    status: "success",
+    source: "gwent",
+    account_count: 1,
+    successful_draws: 1,
+    total_quota: 500000,
+  }];
+  legacy.events = [fullHistoryEvent({
+    event_id: "legacy-before-first-draw-event",
+    run_id: "legacy-before-first-draw",
+    prize_quota: 500000,
+  })];
+  legacy.totals = {
+    total_runs: 1,
+    total_draws: 1,
+    total_wins: 1,
+    total_quota: 500000,
+    total_accounts: 1,
+  };
+  const env = envWith({
+    "newapi-config.json": { accounts: [account] },
+    "automation-settings-v1.json": DEFAULT_SETTINGS,
+  });
+  env.CONFIG_KV = {
+    async get(key) {
+      return key === "gwent-history-v1.json" ? JSON.stringify(legacy) : null;
+    },
+  };
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const value = String(url);
+    if (value.endsWith("/api/gwent/status")) {
+      return responseJson({ success: true, data: { charges_current: 1, extra_draws_left: 0 } });
+    }
+    if (value.endsWith("/api/gwent/share_unlock")) {
+      return responseJson({ success: true, message: "已激活" });
+    }
+    if (value.endsWith("/api/gwent/draw")) {
+      return responseJson({
+        success: true,
+        data: { prize: { name: "新奖励", quota: 500000, rarity: "rare" } },
+      });
+    }
+    throw new Error(`Unexpected URL: ${url}`);
+  };
+  try {
+    const response = await handleRequest(
+      request("/api/admin/run", {
+        method: "POST",
+        token: "admin-secret",
+        headers: { "idempotency-key": "first-draw-after-deploy-01" },
+        body: { action: "draw", account_keys: ["all"], draw_count: 1 },
+      }),
+      env,
+    );
+    assert.equal(response.status, 200);
+    const adjustedEvents = [...env.STATE_DB.automationEvents.values()]
+      .filter((event) => event.status === "success")
+      .map((event) => event.prize_quota)
+      .sort((left, right) => left - right);
+    assert.deepEqual(adjustedEvents, [750000, 750000]);
+    assert.equal(env.STATE_DB.value("migration:bonus-quota-v1").version, 1);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -1136,7 +1301,7 @@ test("an expired claimed draw intent can be reclaimed exactly once", async () =>
     assert.equal((await response.json()).status, "success");
     assert.equal(calls.filter((url) => url.endsWith("/api/gwent/draw")).length, 1);
     assert.equal(env.STATE_DB.value(intentKey).phase, "terminal");
-    assert.equal(env.STATE_DB.value(intentKey).result.prize_quota, 500000);
+    assert.equal(env.STATE_DB.value(intentKey).result.prize_quota, 750000);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -1656,12 +1821,12 @@ test("admin migrate imports legacy history and backfills full tables idempotentl
       run_attempt: 1,
       started_at: "2026-07-17T00:00:00.000Z",
       finished_at: "2026-07-17T00:01:00.000Z",
-      planned_draws: 2,
+      planned_draws: 3,
       status: "success",
       source: "gwent",
       account_count: 1,
-      successful_draws: 2,
-      total_quota: 750000,
+      successful_draws: 3,
+      total_quota: 750100,
     },
     {
       run_id: "legacy-run-2",
@@ -1689,7 +1854,41 @@ test("admin migrate imports legacy history and backfills full tables idempotentl
       run_id: "legacy-run-2",
       task_type: "quiz",
     }),
+    fullHistoryEvent({
+      event_id: "legacy-event-no-bonus",
+      run_id: "legacy-run-1",
+      prize_quota: 100,
+      bonus_percent: 0,
+    }),
   ];
+  history.totals = {
+    total_runs: 2,
+    total_draws: 4,
+    total_wins: 4,
+    total_quota: 1250100,
+    total_accounts: 1,
+  };
+  history.accounts = [{
+    account_key: "aaaaaaaaaaaaaaaa",
+    account_name: "一号",
+    total_draws: 4,
+    total_wins: 4,
+    total_quota: 1250100,
+    last_event_at: "2026-07-18T01:00:00.000Z",
+    last_status: "success",
+  }];
+  history.prizes = [{
+    prize_name: "测试奖品",
+    prize_rarity: "rare",
+    total_draws: 4,
+    total_quota: 1250100,
+  }];
+  history.daily = [{
+    date: "2026-07-18",
+    total_draws: 4,
+    total_wins: 4,
+    total_quota: 1250100,
+  }];
   const env = envWith();
   env.CONFIG_KV = {
     async get(key) {
@@ -1705,12 +1904,27 @@ test("admin migrate imports legacy history and backfills full tables idempotentl
   const first = await firstResponse.json();
   assert.deepEqual(first.history_backfill, {
     runs_seen: 2,
-    events_seen: 3,
+    events_seen: 4,
     runs_inserted: 2,
-    events_inserted: 3,
+    events_inserted: 4,
   });
   assert.equal(env.STATE_DB.automationRuns.size, 2);
-  assert.equal(env.STATE_DB.automationEvents.size, 3);
+  assert.equal(env.STATE_DB.automationEvents.size, 4);
+  assert.equal(env.STATE_DB.automationEvents.get("legacy-event-1").prize_quota, 750000);
+  assert.equal(env.STATE_DB.automationEvents.get("legacy-event-2").prize_quota, 375000);
+  assert.equal(env.STATE_DB.automationEvents.get("legacy-event-3").prize_quota, 750000);
+  assert.equal(env.STATE_DB.automationEvents.get("legacy-event-no-bonus").prize_quota, 100);
+  assert.equal(env.STATE_DB.automationRuns.get("legacy-run-1").total_quota, 1125100);
+  assert.equal(env.STATE_DB.automationRuns.get("legacy-run-2").total_quota, 750000);
+  assert.equal(first.bonus_quota_migration.status, "applied");
+  assert.equal(first.bonus_quota_migration.d1_events_adjusted, 3);
+  const migratedHistory = env.STATE_DB.value("gwent-history-v1.json");
+  assert.equal(migratedHistory.totals.total_quota, 1875100);
+  assert.equal(migratedHistory.accounts[0].total_quota, 1875100);
+  assert.equal(migratedHistory.prizes[0].total_quota, 1875100);
+  assert.equal(migratedHistory.daily[0].total_quota, 1875100);
+  assert.equal(migratedHistory.runs[0].total_quota, 1125100);
+  assert.equal(migratedHistory.runs[1].total_quota, 750000);
 
   const secondResponse = await handleRequest(
     request("/api/admin/migrate", { method: "POST", token: "admin-secret", body: {} }),
@@ -1720,8 +1934,12 @@ test("admin migrate imports legacy history and backfills full tables idempotentl
   const second = await secondResponse.json();
   assert.equal(second.history_backfill.runs_inserted, 0);
   assert.equal(second.history_backfill.events_inserted, 0);
+  assert.equal(second.bonus_quota_migration.status, "already_applied");
   assert.equal(env.STATE_DB.automationRuns.size, 2);
-  assert.equal(env.STATE_DB.automationEvents.size, 3);
+  assert.equal(env.STATE_DB.automationEvents.size, 4);
+  assert.equal(env.STATE_DB.automationEvents.get("legacy-event-1").prize_quota, 750000);
+  assert.equal(env.STATE_DB.automationEvents.get("legacy-event-no-bonus").prize_quota, 100);
+  assert.equal(env.STATE_DB.automationRuns.get("legacy-run-1").total_quota, 1125100);
 });
 
 test("history write and backfill failures return explicit retryable errors", async () => {
@@ -1734,6 +1952,7 @@ test("history write and backfill failures return explicit retryable errors", asy
   const writeEnv = envWith({
     "newapi-config.json": { accounts: [account] },
     "automation-settings-v1.json": DEFAULT_SETTINGS,
+    "migration:bonus-quota-v1": { version: 1, multiplier: 1.5 },
   });
   writeEnv.STATE_DB.failHistoryWrites = true;
   const originalFetch = globalThis.fetch;

@@ -89,6 +89,13 @@ function normalizeBonusPercent(value) {
   return Math.trunc(number > 0 && number <= 1 ? number * 100 : number);
 }
 
+function quotaWithBonus(rawValue, bonusPercent) {
+  const rawQuota = quotaInteger(rawValue);
+  const percent = normalizeBonusPercent(bonusPercent);
+  const adjustedQuota = Math.round(rawQuota * (1 + percent / 100));
+  return Number.isSafeInteger(adjustedQuota) && adjustedQuota >= 0 ? adjustedQuota : rawQuota;
+}
+
 function quotaResult(rawValue, quotaPerYuan = DEFAULT_QUOTA_PER_YUAN) {
   const quotaRaw = quotaInteger(rawValue);
   const unit = safeInteger(quotaPerYuan, { minimum: 1 }) ?? DEFAULT_QUOTA_PER_YUAN;
@@ -711,6 +718,16 @@ export async function unlockAndDraw(accountInput, options = {}) {
     Object.prototype.hasOwnProperty.call(data, "extra_draws_left");
   const chargesCurrent = quotaInteger(data.charges_current);
   const extraDrawsLeft = quotaInteger(data.extra_draws_left);
+  const rawPrizeQuota = quotaInteger(prize.quota);
+  const bonusPercent = options.shareBonus === false
+    ? 0
+    : normalizeBonusPercent(
+        data.applied_bonus_pct ??
+          data.applied_bonus_percent ??
+          data.bonus_pct ??
+          data.bonus_percent ??
+          50,
+      );
   return {
     ok: true,
     success: true,
@@ -720,14 +737,10 @@ export async function unlockAndDraw(accountInput, options = {}) {
     unlock: unlockResult,
     draw_sent: true,
     prize_name: safeMessage(prize.name, account, "未知奖品").slice(0, 80) || "未知奖品",
-    prize_quota: quotaInteger(prize.quota),
+    base_prize_quota: rawPrizeQuota,
+    prize_quota: quotaWithBonus(rawPrizeQuota, bonusPercent),
     prize_rarity: prizeRarity(prize.rarity),
-    bonus_percent: normalizeBonusPercent(
-      data.bonus_pct ??
-        data.bonus_percent ??
-        data.applied_bonus_percent ??
-        (options.shareBonus === false ? 0 : 50),
-    ),
+    bonus_percent: bonusPercent,
     charges_current: hasChargeFields ? chargesCurrent : null,
     extra_draws_left: hasChargeFields ? extraDrawsLeft : null,
     available_after: hasChargeFields ? chargesCurrent + extraDrawsLeft : null,

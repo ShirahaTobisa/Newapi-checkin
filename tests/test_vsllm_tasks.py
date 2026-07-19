@@ -272,7 +272,7 @@ class VsllmTaskTest(unittest.TestCase):
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0]["task_type"], "quiz")
         self.assertEqual(events[0]["status"], "success")
-        self.assertEqual(events[0]["prize_quota"], 10)
+        self.assertEqual(events[0]["prize_quota"], 15)
         self.assertEqual(result["task_status"]["status"], "completed")
         self.assertTrue(result["task_status"]["completed"])
         self.assertEqual([call[1].rsplit("/api/gwent", 1)[-1] for call in session.calls], [
@@ -336,7 +336,7 @@ class VsllmTaskTest(unittest.TestCase):
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0]["task_type"], "ad")
         self.assertEqual(events[0]["status"], "success")
-        self.assertEqual(events[0]["prize_quota"], 20)
+        self.assertEqual(events[0]["prize_quota"], 30)
         self.assertEqual([call[1].rsplit("/api/gwent", 1)[-1] for call in session.calls], [
             "/status",
             "/ad/start",

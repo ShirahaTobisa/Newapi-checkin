@@ -6,6 +6,7 @@ from unittest.mock import Mock, patch
 
 from checkin import (
     NewAPICheckin,
+    apply_gwent_bonus_quota,
     filter_gwent_targets,
     gwent_event_status,
     history_account_key,
@@ -57,7 +58,7 @@ class GwentDrawTest(unittest.TestCase):
 
         self.assertTrue(result['success'])
         self.assertEqual(result['prize_name'], '黄金卡')
-        self.assertEqual(result['prize_quota'], 150)
+        self.assertEqual(result['prize_quota'], 225)
         self.assertEqual(result['bonus_percent'], 50)
         self.assertEqual(
             [call.args[0] for call in client.session.post.call_args_list],
@@ -91,7 +92,44 @@ class GwentDrawTest(unittest.TestCase):
         result = client.gwent_draw()
 
         self.assertTrue(result['success'])
+        self.assertEqual(result['prize_quota'], 30)
         self.assertEqual(client.session.post.call_count, 2)
+
+    def test_applied_bonus_pct_is_used_for_final_quota(self):
+        client = self.make_client()
+        client.session.post.side_effect = [
+            response(200, {'success': True, 'message': '分享加成已激活'}),
+            response(200, {
+                'success': True,
+                'data': {
+                    'prize': {'name': '黄金卡', 'quota': '1,250'},
+                    'applied_bonus_pct': 0.5,
+                },
+            }),
+        ]
+
+        result = client.gwent_draw()
+
+        self.assertEqual(result['prize_quota'], 1875)
+        self.assertEqual(result['bonus_percent'], 50)
+
+    def test_zero_applied_bonus_keeps_base_quota(self):
+        client = self.make_client()
+        client.session.post.side_effect = [
+            response(200, {'success': True, 'message': '请求完成'}),
+            response(200, {
+                'success': True,
+                'data': {
+                    'prize': {'name': '普通卡', 'quota': '1,250'},
+                    'applied_bonus_pct': 0,
+                },
+            }),
+        ]
+
+        result = client.gwent_draw()
+
+        self.assertEqual(result['prize_quota'], 1250)
+        self.assertEqual(result['bonus_percent'], 0)
 
     def test_draw_many_runs_requested_number_of_times(self):
         client = self.make_client()
@@ -195,6 +233,8 @@ class GwentDrawTest(unittest.TestCase):
         self.assertEqual(normalize_gwent_quota('not-a-number'), 0)
         self.assertEqual(normalize_gwent_bonus_percent('0.5'), 50)
         self.assertEqual(normalize_gwent_bonus_percent(50), 50)
+        self.assertEqual(apply_gwent_bonus_quota('1,250', 50), 1875)
+        self.assertEqual(apply_gwent_bonus_quota('1,250', 0), 1250)
 
     @patch('checkin.load_gwent_last_success')
     @patch('checkin.NewAPICheckin')

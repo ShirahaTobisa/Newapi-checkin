@@ -194,6 +194,20 @@ class NewAPICheckin:
 
             payload = draw_data.get('data') or {}
             prize = payload.get('prize') or {}
+            bonus_value = next(
+                (
+                    payload[key]
+                    for key in (
+                        'applied_bonus_pct',
+                        'applied_bonus_percent',
+                        'bonus_pct',
+                        'bonus_percent',
+                    )
+                    if key in payload and payload[key] is not None
+                ),
+                50,
+            )
+            bonus_percent = normalize_gwent_bonus_percent(bonus_value)
             charges_current = normalize_gwent_quota(payload.get('charges_current'))
             extra_draws_left = normalize_gwent_quota(payload.get('extra_draws_left'))
             has_charge_fields = 'charges_current' in payload or 'extra_draws_left' in payload
@@ -201,14 +215,9 @@ class NewAPICheckin:
                 'success': True,
                 'message': draw_message,
                 'prize_name': prize.get('name'),
-                'prize_quota': prize.get('quota'),
+                'prize_quota': apply_gwent_bonus_quota(prize.get('quota'), bonus_percent),
                 'prize_rarity': prize.get('rarity'),
-                'bonus_percent': normalize_gwent_bonus_percent(
-                    payload.get(
-                        'bonus_pct',
-                        payload.get('bonus_percent', payload.get('applied_bonus_percent', 50)),
-                    )
-                ),
+                'bonus_percent': bonus_percent,
                 'charges_current': charges_current if has_charge_fields else None,
                 'extra_draws_left': extra_draws_left if has_charge_fields else None,
                 'available_after': charges_current + extra_draws_left if has_charge_fields else None,
@@ -688,6 +697,13 @@ def normalize_gwent_bonus_percent(value) -> int:
     if 0 < number <= 1:
         number *= 100
     return int(number)
+
+
+def apply_gwent_bonus_quota(value, bonus_percent) -> int:
+    """把翻牌接口返回的原始额度换算为包含分享加成的最终额度。"""
+    quota = normalize_gwent_quota(value)
+    bonus = normalize_gwent_bonus_percent(bonus_percent)
+    return (quota * (100 + bonus) + 50) // 100
 
 
 def parse_utc_timestamp(value):

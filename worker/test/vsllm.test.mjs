@@ -312,7 +312,8 @@ test("unlockAndDraw activates share bonus before one draw and parses the prize",
   const result = await unlockAndDraw(existingAccount, { fetch: mock.fetch });
   assert.equal(result.ok, true);
   assert.equal(result.prize_name, "黄金卡");
-  assert.equal(result.prize_quota, 1250);
+  assert.equal(result.base_prize_quota, 1250);
+  assert.equal(result.prize_quota, 1875);
   assert.equal(result.bonus_percent, 50);
   assert.equal(result.available_after, 3);
   assert.deepEqual(
@@ -331,6 +332,24 @@ test("unlock failure prevents the draw request", async () => {
   assert.equal(result.ok, false);
   assert.equal(result.draw_sent, false);
   assert.equal(mock.calls.length, 1);
+});
+
+test("unlockAndDraw supports applied_bonus_pct from the draw response", async () => {
+  const mock = queuedFetch([
+    jsonResponse({ success: true, message: "50% 加成已激活" }),
+    jsonResponse({
+      success: true,
+      data: {
+        prize: { name: "白银卡", quota: 1000, rarity: "common" },
+        applied_bonus_pct: 25,
+      },
+    }),
+  ]);
+
+  const result = await unlockAndDraw(existingAccount, { fetch: mock.fetch });
+  assert.equal(result.base_prize_quota, 1000);
+  assert.equal(result.prize_quota, 1250);
+  assert.equal(result.bonus_percent, 25);
 });
 
 test("unlockAndDraw skips share unlock when shareBonus is disabled", async () => {
@@ -352,6 +371,8 @@ test("unlockAndDraw skips share unlock when shareBonus is disabled", async () =>
     message: "未启用加成",
   });
   assert.equal(result.draw_sent, true);
+  assert.equal(result.base_prize_quota, 10);
+  assert.equal(result.prize_quota, 10);
   assert.equal(result.bonus_percent, 0);
   assert.deepEqual(mock.calls.map((call) => new URL(call.url).pathname), ["/api/gwent/draw"]);
 });
